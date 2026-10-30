@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 URnetwork 住宅代理交互式管理工具
-基于 URnetwork 去中心化住宅网络，支持实时国家抓取与自选节点
+基于 URnetwork 去中心化住宅网络，支持实时国家抓取、即用测试命令生成与端到端代理连通性自检
 """
 
 import sys
@@ -9,7 +9,7 @@ import argparse
 from core.config import load_config, save_config
 from core.client import URClient
 from core.locator import fetch_live_countries, search_cities
-from core.checker import test_tcp_ping
+from core.checker import test_tcp_ping, test_full_proxy
 
 HOT_COUNTRIES = ["US", "JP", "DE", "GB", "SG", "HK", "FR", "CA", "KR", "AU"]
 
@@ -26,28 +26,63 @@ def print_banner():
 ======================================================================
 """)
 
-def display_proxy_result(res):
+def display_proxy_result(res, check_tunnel=True):
+    host = res["host"]
+    hp = res["http_port"]
+    sp = res["socks_port"]
+    tok = res["auth_token"]
+    pwd = res.get("password", "none")
+    cmds = res.get("test_commands", {})
+
     print("\n" + "=" * 70)
     print(f"【节点分配成功 - 出口策略: {res['target_desc']}】")
     print("-" * 70)
     print("【标准格式代理 (用户名:密码@Host:端口)】")
-    print(f"HTTP 代理:   {res['standard_http']}")
-    print(f"SOCKS5 代理: {res['standard_socks5']}")
-    print(f"HTTPS 代理:  {res['standard_https']}")
+    print(f"  HTTP 代理:   {res['standard_http']}")
+    print(f"  SOCKS5 代理: {res['standard_socks5']}")
+    print(f"  HTTPS 代理:  {res['standard_https']}")
+    print("  * 提示: 密码统一填充为 'none'，避免客户端因空密码降级导致鉴权被拒。")
     print("-" * 70)
-    print("【官方原生返回 URL】")
-    print(f"原生 HTTPS:  {res['native_https_url']}")
-    print(f"原生 HTTP:   {res['native_http_url']}")
-    print(f"原生 SOCKS5: {res['native_socks_url']}")
+    print("【即用型测试命令 (可直接在终端中复制运行)】")
+    if "curl_http" in cmds:
+        print(f"  cURL (HTTP):     {cmds['curl_http']}")
+    if "curl_socks5" in cmds:
+        print(f"  cURL (SOCKS5):   {cmds['curl_socks5']}")
+    if "python_http" in cmds:
+        print(f"  Python (HTTP):   {cmds['python_http']}")
+    if "python_socks5" in cmds:
+        print(f"  Python (SOCKS5): {cmds['python_socks5']}")
+    print("-" * 70)
+    print("【官方原生返回 URL】(注意: 原生 URL 默认不含 Basic 鉴权信息)")
+    print(f"  原生 HTTPS:  {res['native_https_url']}")
+    print(f"  原生 HTTP:   {res['native_http_url']}")
+    print(f"  原生 SOCKS5: {res['native_socks_url']}")
     print("-" * 70)
 
-    # 快速自检端口连通性
-    ok_http, ms_http, err_http = test_tcp_ping(res["host"], res["http_port"])
-    ok_socks, ms_socks, err_socks = test_tcp_ping(res["host"], res["socks_port"])
-    status_http = f"在线 ({ms_http} ms)" if ok_http else f"异常 ({err_http})"
-    status_socks = f"在线 ({ms_socks} ms)" if ok_socks else f"异常 ({err_socks})"
+    if check_tunnel:
+        print("[*] 正在执行端到端代理隧道握手与出口 IP 自检 (基于 api.ipify.org)...")
+        t_res = test_full_proxy(host, hp, sp, tok, pwd, timeout=8)
+        
+        if t_res["http_ok"]:
+            h_stat = f"在线 [OK] ({t_res['http_ms']} ms) -> 出口 IP: {t_res['http_result']}"
+        else:
+            h_stat = f"异常 [FAIL] ({t_res['http_result']})"
 
-    print(f"端口健康状态: HTTP [{status_http}] | SOCKS5 [{status_socks}]")
+        if t_res["socks_ok"]:
+            s_stat = f"在线 [OK] ({t_res['socks_ms']} ms) -> 出口 IP: {t_res['socks_result']}"
+        else:
+            s_stat = f"异常 [FAIL] ({t_res['socks_result']})"
+
+        print(f"  HTTP 代理状态:   [{h_stat}]")
+        print(f"  SOCKS5 代理状态: [{s_stat}]")
+    else:
+        # 仅做极速 TCP 端口自检
+        ok_http, ms_http, err_http = test_tcp_ping(host, hp)
+        ok_socks, ms_socks, err_socks = test_tcp_ping(host, sp)
+        status_http = f"在线 ({ms_http} ms)" if ok_http else f"异常 ({err_http})"
+        status_socks = f"在线 ({ms_socks} ms)" if ok_socks else f"异常 ({err_socks})"
+        print(f"  端口底层健康: HTTP [{status_http}] | SOCKS5 [{status_socks}]")
+
     print("=" * 70 + "\n")
 
 def interactive_mode(client, config):
@@ -85,7 +120,7 @@ def interactive_mode(client, config):
             print("\n[*] 正在申请全球最佳链路节点...")
             try:
                 res = client.create_proxy(mode="best")
-                display_proxy_result(res)
+                display_proxy_result(res, check_tunnel=True)
             except Exception as e:
                 print(f"[!] 申请失败: {e}\n")
             if safe_input("按回车键继续...") is None:
@@ -109,57 +144,47 @@ def interactive_mode(client, config):
             print(f"\n[*] 正在申请指定国家 [{country_code}] 节点...")
             try:
                 res = client.create_proxy(mode="country", target=country_code)
-                display_proxy_result(res)
+                display_proxy_result(res, check_tunnel=True)
             except Exception as e:
                 print(f"[!] 申请失败: {e}\n")
             if safe_input("按回车键继续...") is None:
                 break
 
         elif choice == "3":
-            print("\n[*] 正在连接 https://ur.io 实时抓取最新国家节点分布...")
-            try:
-                countries = fetch_live_countries(
-                    ur_base=config.get("ur_base_url", "https://ur.io"),
-                    api_base=config.get("api_base_url", "https://api.bringyour.com"),
-                    timeout=config.get("timeout_seconds", 15)
-                )
-            except Exception as e:
-                print(f"[!] 抓取国家列表失败: {e}")
+            print("\n[*] 正在从 https://ur.io 实时抓取支持国家列表...")
+            countries = fetch_live_countries(ur_base=config.get("ur_base_url", "https://ur.io"))
+            if not countries:
+                print("[!] 获取国家列表失败，请检查网络连接。")
                 if safe_input("按回车键继续...") is None:
                     break
                 continue
 
-            print(f"成功获取 {len(countries)} 个国家及在线节点统计：\n")
-            page_size = 25
-            print(f"{'序号':<5} {'代码':<6} {'国家/地区名称':<28} {'在线节点':<10} {'覆盖区域'}")
-            print("-" * 65)
-            for idx, c in enumerate(countries[:page_size], 1):
-                print(f"[{idx:2d}]   {c['code']:<6} {c['name']:<28} {c['providers']:<10} {c['regions_count']} 个区域")
-            print("-" * 65)
-            print(f"(展示前 {page_size} 个主要国家，输入代码可直接指定任意国家)")
+            print("\n当前活跃国家 (按节点数排序)：")
+            for idx, c in enumerate(countries[:30], 1):
+                print(f" [{idx:2d}] [{c['code']}] {c['name']:<22} (节点数: {c['providers']})")
 
-            pick = safe_input("\n请输入序号选择，或直接输入国家代码 (如 JP / DE): ")
+            pick = safe_input("\n请输入序号或直接输入2位国家代码 (如 US): ")
             if pick is None:
                 break
             pick = pick.strip()
             if not pick:
                 continue
-            if pick.isdigit() and 1 <= int(pick) <= len(countries[:page_size]):
-                selected_code = countries[int(pick) - 1]["code"]
+            if pick.isdigit() and 1 <= int(pick) <= len(countries):
+                country_code = countries[int(pick) - 1]["code"]
             else:
-                selected_code = pick.upper()
+                country_code = pick.upper()
 
-            print(f"\n[*] 正在申请指定国家 [{selected_code}] 代理节点...")
+            print(f"\n[*] 正在申请指定国家 [{country_code}] 节点...")
             try:
-                res = client.create_proxy(mode="country", target=selected_code)
-                display_proxy_result(res)
+                res = client.create_proxy(mode="country", target=country_code)
+                display_proxy_result(res, check_tunnel=True)
             except Exception as e:
                 print(f"[!] 申请失败: {e}\n")
             if safe_input("按回车键继续...") is None:
                 break
 
         elif choice == "4":
-            city_query = safe_input("\n请输入要搜索的目标城市英文字符串 (如 Tokyo, London, Singapore): ")
+            city_query = safe_input("\n请输入要搜索的城市名称 (英文，如 Tokyo, Frankfurt, London, Singapore): ")
             if city_query is None:
                 break
             city_query = city_query.strip()
@@ -190,7 +215,7 @@ def interactive_mode(client, config):
                 print(f"\n[*] 正在申请城市 [{target_name}] 节点...")
                 try:
                     res = client.create_proxy(mode="city", target=target_name)
-                    display_proxy_result(res)
+                    display_proxy_result(res, check_tunnel=True)
                 except Exception as e:
                     print(f"[!] 申请失败: {e}\n")
             if safe_input("按回车键继续...") is None:
@@ -224,8 +249,9 @@ def interactive_mode(client, config):
 
 def main():
     parser = argparse.ArgumentParser(description="URnetwork 住宅代理管理器 (ur.io)")
-    parser.add_argument("--mode", choices=["best", "country", "city"], help="代理策略模式")
+    parser.add_argument("--mode", choices=["best", "country", "city"], help="代理策略模式: best | country | city")
     parser.add_argument("--target", default="", help="目标国家代码 (如 JP) 或城市名 (如 Tokyo)")
+    parser.add_argument("--no-check", action="store_true", help="跳过端到端代理连通性自检 (仅显示连接信息)")
     parser.add_argument("--list-countries", action="store_true", help="从 https://ur.io 获取在线国家列表")
     parser.add_argument("--status", action="store_true", help="查看账户配额状态")
     parser.add_argument("--clean", action="store_true", help="清理历史客户端连接")
@@ -263,7 +289,7 @@ def main():
 
     if args.mode:
         res = client.create_proxy(mode=args.mode, target=args.target)
-        display_proxy_result(res)
+        display_proxy_result(res, check_tunnel=not args.no_check)
         return
 
     # 无参数时进入交互式菜单

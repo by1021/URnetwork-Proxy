@@ -146,7 +146,13 @@ class URClient:
 
         host = p["proxy_host"]
         token = p["auth_token"]
-        password = ""
+        # 密码设为 'none'：多数客户端（PySocks / sing-box / Clash 等）在密码为空时会放弃 0x02 认证
+        # 降级为 0x00 (无认证) 导致被服务端拦截。填入 'none' 可确保 RFC 1929 认证严格生效。
+        password = "none"
+
+        http_port = p["http_proxy_port"]
+        socks_port = p["socks_proxy_port"]
+        https_port = p["https_proxy_port"]
 
         return {
             "mode": mode,
@@ -154,18 +160,26 @@ class URClient:
             "client_id": res.get("client_id"),
             "host": host,
             "auth_token": token,
-            "http_port": p["http_proxy_port"],
-            "https_port": p["https_proxy_port"],
-            "socks_port": p["socks_proxy_port"],
+            "password": password,
+            "http_port": http_port,
+            "https_port": https_port,
+            "socks_port": socks_port,
             # 标准格式: protocol://user:pass@host:port
-            "standard_http": f"http://{token}:{password}@{host}:{p['http_proxy_port']}",
-            "standard_socks5": f"socks5://{token}:{password}@{host}:{p['socks_proxy_port']}",
-            "standard_https": f"https://{token}:{password}@{host}:{p['https_proxy_port']}",
-            # 官方原生返回
+            "standard_http": f"http://{token}:{password}@{host}:{http_port}",
+            "standard_socks5": f"socks5://{token}:{password}@{host}:{socks_port}",
+            "standard_https": f"https://{token}:{password}@{host}:{https_port}",
+            # 官方原生返回 (注意: 原生 URL 不含 Basic 凭证，直接使用会超时被拒)
             "native_http_url": p["http_proxy_url"],
             "native_https_url": p["https_proxy_url"],
             "native_socks_url": p["socks_proxy_url"],
-            "wg_config": p.get("wg_config")
+            "wg_config": p.get("wg_config"),
+            # 即用型测试命令
+            "test_commands": {
+                "curl_http": f'curl -s -x "http://{token}:{password}@{host}:{http_port}" https://api.ipify.org',
+                "curl_socks5": f'curl -s --socks5-hostname "{token}:{password}@{host}:{socks_port}" https://api.ipify.org',
+                "python_http": f'python -c "import requests; print(\'HTTP 代理 IP:\', requests.get(\'https://api.ipify.org\', proxies={{\'http\': \'http://{token}:{password}@{host}:{http_port}\', \'https\': \'http://{token}:{password}@{host}:{http_port}\'}}, timeout=10).text.strip())"',
+                "python_socks5": f'python -c "import requests; print(\'SOCKS5 代理 IP:\', requests.get(\'https://api.ipify.org\', proxies={{\'http\': \'socks5://{token}:{password}@{host}:{socks_port}\', \'https\': \'socks5://{token}:{password}@{host}:{socks_port}\'}}, timeout=10).text.strip())"'
+            }
         }
 
     def clean_clients(self):
