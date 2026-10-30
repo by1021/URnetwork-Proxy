@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 URnetwork 核心 API 客户端
-封装登录认证、账户配额、代理节点申请与生命周期管理
+封装多重认证登录 (API Key / JWT Token / 网页授权码 / 助记词 / 密码)、
+账户配额、代理节点申请与生命周期管理
 """
 
 import urllib.request
@@ -11,19 +12,35 @@ import time
 from .locator import search_cities
 
 class URClient:
-    def __init__(self, seedphrase, api_base="https://api.bringyour.com", timeout=15):
-        self.seedphrase = seedphrase.strip()
+    def __init__(
+        self,
+        api_key="",
+        jwt_token="",
+        seedphrase="",
+        auth_code="",
+        email="",
+        password="",
+        api_base="https://api.bringyour.com",
+        timeout=15
+    ):
+        self.api_key = (api_key or "").strip()
+        self.jwt_token = (jwt_token or "").strip()
+        self.seedphrase = (seedphrase or "").strip()
+        self.auth_code = (auth_code or "").strip()
+        self.email = (email or "").strip()
+        self.password = (password or "").strip()
         self.api_base = api_base.rstrip("/")
         self.timeout = timeout
         self.jwt = None
-        self.jwt_payload = None
+        self.jwt_payload = {}
         self.network_info = {}
+        self.auth_method = "none"
 
     def _request(self, path, method="GET", body=None, auth=True):
         url = f"{self.api_base}{path}"
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) URnetwork-Proxy-Client/1.0"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) URnetwork-Proxy-Client/1.1"
         }
         if auth:
             if not self.jwt:
@@ -36,38 +53,148 @@ class URClient:
             content = resp.read().decode("utf-8")
             return json.loads(content) if content else {}
 
-    def login(self):
-        """使用助记词登录，获取并解析 Network JWT"""
-        if not self.seedphrase:
-            raise ValueError("助记词为空，请在 config.json 中配置正确助记词。")
-        
-        payload = {
-            "seedphrase": self.seedphrase,
-            "result_errors": True
-        }
-        res = self._request("/auth/login", method="POST", body=payload, auth=False)
-        if "error" in res and res["error"]:
-            raise RuntimeError(f"登录失败: {res['error'].get('message', res['error'])}")
-        
-        network = res.get("network", {})
-        self.jwt = network.get("by_jwt")
-        if not self.jwt:
-            raise RuntimeError("登录未返回有效 JWT，请核对助记词。")
-
-        # 解析 JWT Payload
+    def _resolve_session_info(self):
+        """解析 Token Payload 并向官方接口查询 network_user 详情"""
+        # 尝试解码 JWT Payload (如果是 urn_... 格式的 API Key 则无法 base64 解码，跳过即可)
+        self.jwt_payload = {}
         try:
-            parts = self.jwt.split(".")
-            padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
-            self.jwt_payload = json.loads(base64.urlsafe_b64decode(padded))
+            if self.jwt and "." in self.jwt:
+                parts = self.jwt.split(".")
+                if len(parts) >= 2:
+                    padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                    self.jwt_payload = json.loads(base64.urlsafe_b64decode(padded))
+        except Exception:
+            pass
+
+        # 通过 /network/user 获取网络详情
+        try:
+            u_info = self._request("/network/user", method="GET")
+            nu = u_info.get("network_user", {})
             self.network_info = {
-                "network_id": self.jwt_payload.get("network_id"),
-                "network_name": self.jwt_payload.get("network_name"),
-                "user_id": self.jwt_payload.get("user_id")
+                "network_id": nu.get("network_id") or self.jwt_payload.get("network_id"),
+                "network_name": nu.get("network_name") or self.jwt_payload.get("network_name") or "unknown",
+                "user_id": nu.get("user_id") or self.jwt_payload.get("user_id"),
+                "auth_types": nu.get("auth_types", [])
             }
         except Exception:
-            self.network_info = {"network_name": "unknown"}
+            self.network_info = {
+                "network_id": self.jwt_payload.get("network_id"),
+                "network_name": self.jwt_payload.get("network_name") or "unknown",
+                "user_id": self.jwt_payload.get("user_id"),
+                "auth_types": []
+            }
 
-        return self.network_info
+    def login(self):
+        """
+        统一认证登录接口，按优先级适配不同账号类型：
+        1. 官方 API Key (urn_...) - 推荐，长期有效，不随浏览器会话过期
+        2. 浏览器 Token (jwt_token / byJwt) - 直接从网页 F12 复制
+        3. 网页授权码 (auth_code) - 官网生成 5 分钟授权码换取 JWT
+        4. 邮箱独立密码 (email + password) - 仅限在 URnetwork 设置过密码的用户
+        5. 恢复助记词 (seedphrase) - 经典 24 词助记词
+        """
+        # 1. 优先使用 API Key
+        if self.api_key:
+            self.jwt = self.api_key
+            self.auth_method = "api_key"
+            self._resolve_session_info()
+            return self.network_info
+
+        # 2. 次选浏览器导出的 JWT
+        if self.jwt_token:
+            self.jwt = self.jwt_token
+            self.auth_method = "jwt_token"
+            self._resolve_session_info()
+            return self.network_info
+
+        # 3. 网页授权码 (Auth Code)
+        if self.auth_code:
+            payload = {"auth_code": self.auth_code}
+            res = self._request("/auth/code-login", method="POST", body=payload, auth=False)
+            if "error" in res and res["error"]:
+                raise RuntimeError(f"授权码兑换失败: {res['error'].get('message', res['error'])}")
+            by_jwt = res.get("by_jwt")
+            if not by_jwt:
+                raise RuntimeError("授权码登录未返回有效凭证。")
+            self.jwt = by_jwt
+            self.auth_method = "auth_code"
+            self._resolve_session_info()
+            return self.network_info
+
+        # 4. 邮箱 + 密码
+        if self.email and self.password:
+            payload = {
+                "user_auth": self.email,
+                "password": self.password,
+                "verify_otp_numeric": True
+            }
+            res = self._request("/auth/login-with-password", method="POST", body=payload, auth=False)
+            if "error" in res and res["error"]:
+                err_msg = res["error"].get("message", str(res["error"]))
+                raise RuntimeError(f"邮箱密码登录失败: {err_msg} (如果是 Google 快捷登录注册的用户，请使用网页 Auth Code 或 API Key 登录)")
+            if res.get("verification_required"):
+                raise RuntimeError("此账号开启了两步验证，请登录网页端生成 Auth Code 或 API Key。")
+            net = res.get("network", {})
+            by_jwt = net.get("by_jwt")
+            if not by_jwt:
+                raise RuntimeError("邮箱密码登录未返回网络凭证。")
+            self.jwt = by_jwt
+            self.auth_method = "password"
+            self._resolve_session_info()
+            return self.network_info
+
+        # 5. 助记词登录
+        if self.seedphrase:
+            payload = {
+                "seedphrase": self.seedphrase,
+                "result_errors": True
+            }
+            res = self._request("/auth/login", method="POST", body=payload, auth=False)
+            if "error" in res and res["error"]:
+                raise RuntimeError(f"助记词登录失败: {res['error'].get('message', res['error'])}")
+            net = res.get("network", {})
+            by_jwt = net.get("by_jwt")
+            if not by_jwt:
+                raise RuntimeError("助记词未返回有效 JWT。")
+            self.jwt = by_jwt
+            self.auth_method = "seedphrase"
+            self._resolve_session_info()
+            return self.network_info
+
+        raise ValueError("未检测到有效认证配置！请在 config.json 中配置 api_key, jwt_token 或 seedphrase，或使用 --auth-code 登录。")
+
+    def create_api_key(self, name="URnetwork-Proxy-Client"):
+        """为当前账号生成一个长期有效的 API Key (urn_...)"""
+        res = self._request("/account/api-key", method="POST", body={"name": name})
+        if "error" in res and res["error"]:
+            raise RuntimeError(f"创建 API Key 失败: {res['error'].get('message', res['error'])}")
+        return res
+
+    def list_api_keys(self):
+        """列出当前账号名下的所有 API Key"""
+        res = self._request("/account/api-keys", method="GET")
+        return res.get("api_keys", [])
+
+    def remove_api_key(self, key_id):
+        """撤销指定的 API Key"""
+        return self._request("/account/api-key/remove", method="POST", body={"id": key_id})
+
+    def generate_seedphrase(self):
+        """
+        为未创建助记词的账号 (例如 Google / 邮箱注册的账号) 生成专属 24 位助记词
+        若账号已有助记词，服务端将返回错误，此时可使用 regenerate_seedphrase
+        """
+        res = self._request("/auth/generate-seedphrase", method="POST", body={})
+        if "error" in res and res["error"]:
+            raise RuntimeError(f"生成助记词失败: {res['error'].get('message', res['error'])}")
+        return res.get("seedphrase")
+
+    def regenerate_seedphrase(self):
+        """重置并重新生成 24 位助记词"""
+        res = self._request("/auth/regenerate-seedphrase", method="POST", body={})
+        if "error" in res and res["error"]:
+            raise RuntimeError(f"重新生成助记词失败: {res['error'].get('message', res['error'])}")
+        return res.get("seedphrase")
 
     def get_account_status(self):
         """查询账户每日配额与使用量信息"""
@@ -78,6 +205,8 @@ class URClient:
         return {
             "network_name": self.network_info.get("network_name", "未知"),
             "network_id": self.network_info.get("network_id"),
+            "auth_method": self.auth_method,
+            "auth_types": self.network_info.get("auth_types", []),
             "daily_quota_gib": round(start_bytes / (1024**3), 2),
             "remaining_gib": round(curr_bytes / (1024**3), 2),
             "used_gib": round((start_bytes - curr_bytes) / (1024**3), 2),
@@ -180,15 +309,13 @@ class URClient:
             target_desc = "全球最佳链路 (自动优选)"
             loc_label = "Best Available"
         elif mode == "country":
-            country_code = target.strip().upper()
+            country_code = (target or "US").strip().upper()
             init_state = {"country_code": country_code}
             target_desc = f"指定国家/地区 [{country_code}]"
             loc_label = country_code
         elif mode == "city":
-            # 搜索城市节点
             cities = search_cities(target, api_base=self.api_base, timeout=self.timeout)
             if not cities:
-                # 若未匹配到，降级为最佳链路
                 print(f"[!] 城市 [{target}] 未找到可用节点，自动降级为最佳连接。")
                 init_state = {"location": {"connect_location_id": {"best_available": True}}}
                 target_desc = "城市未命中降级 -> 全球最佳"
@@ -210,7 +337,6 @@ class URClient:
         else:
             raise ValueError(f"未知策略模式: {mode}")
 
-        # 对齐官方网页端规范参数
         proto_clean = protocol.lower() if protocol in ["socks", "https", "wireguard"] else "socks"
         description = f"resident proxy · {loc_label}"
         device_spec = f"ur.io proxy {proto_clean}"
@@ -237,8 +363,6 @@ class URClient:
 
         host = p["proxy_host"]
         token = p["auth_token"]
-        # 密码设为 'none'：多数客户端（PySocks / sing-box / Clash 等）在密码为空时会把 RFC 1929 认证
-        # 降级为 0x00 (无认证) 导致被服务端拦截。填入 'none' 可确保 RFC 1929 认证严格生效。
         password = "none"
 
         http_port = p["http_proxy_port"]
@@ -257,20 +381,17 @@ class URClient:
             "http_port": http_port,
             "https_port": https_port,
             "socks_port": socks_port,
-            # 标准格式: protocol://user:pass@host:port
             "standard_http": f"http://{token}:{password}@{host}:{http_port}",
             "standard_socks5": f"socks5://{token}:{password}@{host}:{socks_port}",
             "standard_https": f"https://{token}:{password}@{host}:{https_port}",
-            # 官方原生返回 (注意: 原生 URL 不含 Basic 凭证，直接使用会超时被拒)
             "native_http_url": p["http_proxy_url"],
             "native_https_url": p["https_proxy_url"],
             "native_socks_url": p["socks_proxy_url"],
             "wg_config": p.get("wg_config"),
-            # 即用型测试命令
             "test_commands": {
                 "curl_http": f'curl -s -x "http://{token}:{password}@{host}:{http_port}" https://api.ipify.org',
                 "curl_socks5": f'curl -s --socks5-hostname "{token}:{password}@{host}:{socks_port}" https://api.ipify.org',
-                "python_http": f'python -c "import requests; print(\'HTTP 代理 IP:\', requests.get(\'https://api.ipify.org\', proxies={{\'http\': \'http://{token}:{password}@{host}:{http_port}\', \'https\': \'http://{token}:{password}@{host}:{http_port}\'}}, timeout=10).text.strip())"',
-                "python_socks5": f'python -c "import requests; print(\'SOCKS5 代理 IP:\', requests.get(\'https://api.ipify.org\', proxies={{\'http\': \'socks5://{token}:{password}@{host}:{socks_port}\', \'https\': \'socks5://{token}:{password}@{host}:{socks_port}\'}}, timeout=10).text.strip())"'
+                "python_http": f"python -c \"import requests; print('HTTP 代理 IP:', requests.get('https://api.ipify.org', proxies={{'http': 'http://{token}:{password}@{host}:{http_port}', 'https': 'http://{token}:{password}@{host}:{http_port}'}}, timeout=10).text.strip())\"",
+                "python_socks5": f"python -c \"import requests; print('SOCKS5 代理 IP:', requests.get('https://api.ipify.org', proxies={{'http': 'socks5://{token}:{password}@{host}:{socks_port}', 'https': 'socks5://{token}:{password}@{host}:{socks_port}'}}, timeout=10).text.strip())\""
             }
         }

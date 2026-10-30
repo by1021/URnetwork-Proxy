@@ -4,5 +4,6 @@
   "ur_base_url": "https://ur.io",
   "default_mode": "best",
   "default_country": "US",
-  "timeout_seconds": 15
+  "timeout_seconds": 15,
+  "api_key": "urn_7DCKQTDBRLU4QVFF912D9L31NG9RHDQSLHDAVAQ38ESR7QVLIMJ0"
 }
