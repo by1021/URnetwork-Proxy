@@ -1,0 +1,8 @@
+{
+  "seedphrase": "believe charge pond glimpse wire cargo soldier bone nice office useful olive sense need guitar club reduce ability brain walnut hurdle manage better rapid",
+  "api_base_url": "https://api.bringyour.com",
+  "ur_base_url": "https://ur.io",
+  "default_mode": "best",
+  "default_country": "US",
+  "timeout_seconds": 15
+}
