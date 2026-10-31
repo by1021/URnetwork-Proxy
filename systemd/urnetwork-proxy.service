@@ -1,0 +1,19 @@
+[Unit]
+Description=URnetwork-Proxy Web Gateway Service
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 建议配置为实际运行的用户与项目路径
+# User=your_user
+# Group=your_group
+# WorkingDirectory=/opt/URnetwork-Proxy
+ExecStart=/usr/bin/python3 main.py --web
+Restart=always
+RestartSec=5
+KillMode=process
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
