@@ -479,7 +479,7 @@ def main():
     parser.add_argument("--list-proxies", action="store_true", help="查看当前网页端 Proxies 列表")
     parser.add_argument("--clean", action="store_true", help="清理所有网页端代理与历史客户端连接")
     parser.add_argument("--web", action="store_true", help="启动本地多网关 Web 管理界面")
-    parser.add_argument("--web-port", type=int, default=8888, help="管理界面端口，默认 8888")
+    parser.add_argument("--web-port", type=int, default=None, help="管理界面端口，默认 8777 (可在 config.json 中配置 web_port)")
     parser.add_argument("--state-dir", help="网关状态目录，默认项目 .local")
     parser.add_argument("--open-browser", action="store_true", help="启动后打开管理界面")
     args = parser.parse_args()
@@ -487,7 +487,12 @@ def main():
     config = load_config()
     if args.web:
         from core.web_server import serve
-        serve(config, port=args.web_port, state_dir=args.state_dir, open_browser=args.open_browser)
+        port = args.web_port if args.web_port is not None else config.get("web_port", 8777)
+        try:
+            port = int(port)
+        except (ValueError, TypeError):
+            port = 8777
+        serve(config, port=port, state_dir=args.state_dir, open_browser=args.open_browser)
         return
 
     api_key = args.api_key or config.get("api_key", "").strip()

@@ -5,6 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from core.checker import test_http_proxy, test_socks5_proxy
+
+test_http_proxy.__test__ = False
+test_socks5_proxy.__test__ = False
 from core.gateway import GatewayManager
 from core.protocol import close_writer
 from tests.fixtures import FakeUpstream

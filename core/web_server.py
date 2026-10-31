@@ -17,10 +17,11 @@ from urllib.parse import parse_qs, urlsplit
 from .client import URClient
 from .gateway import GatewayManager
 from .locator import CountryCatalog
-from .storage import ProcessLock, atomic_json
+from .storage import ProcessLock
+from .config import CONFIG_FILE, CREDENTIAL_FIELDS, DEFAULT_CONFIG, ConfigError, parse_config
+from .config_editor import ConfigEditor, ConfigConflict
 
 ROOT = Path(__file__).resolve().parent.parent
-CREDENTIAL_FIELDS = ("api_key", "jwt_token", "seedphrase", "auth_code", "email", "password")
 
 
 def build_client(config):
@@ -35,10 +36,12 @@ class ApiProblem(Exception):
 
 
 class ManagementApp:
-    def __init__(self, config, state_dir, *, manager=None, client=None):
+    def __init__(self, config, state_dir, *, manager=None, client=None, web_port=None, config_path=None):
         self.config = dict(config)
+        self.web_port = web_port if web_port is not None else self.config.get("web_port", 8777)
         self.state_dir = Path(state_dir)
         saved = self.state_dir / "credentials.json"
+        self.config_editor = ConfigEditor(config_path or CONFIG_FILE, saved, self.config)
         if saved.exists():
             override = json.loads(saved.read_text(encoding="utf-8"))
             self.config.update({k: override.get(k, "") for k in CREDENTIAL_FIELDS})
@@ -125,7 +128,71 @@ class ManagementApp:
     def settings(self):
         kind = next((k for k in CREDENTIAL_FIELDS if self.config.get(k)), "none")
         return dict(credential_type=kind, configured=kind != "none",
-                    api_base_url=self.client.api_base)
+                    api_base_url=self.client.api_base,
+                    web_port=getattr(self, "web_port", 8777))
+
+    def configuration(self, snapshot=None):
+        config, revision, legacy, exists = snapshot or self.config_editor.read()
+        redacted = self.config_editor.redacted(config)
+        changed = [key for key, default in DEFAULT_CONFIG.items()
+                   if config.get(key, default) != self.config.get(key, default)]
+        return dict(config=redacted, source=json.dumps(redacted, ensure_ascii=False, indent=2),
+                    revision=revision, file="config.json", exists=exists,
+                    legacy_credentials=legacy, active_port=self.web_port,
+                    restart_required=bool(changed), restart_fields=changed)
+
+    async def _assert_account_idle(self):
+        if await self.manager.list_gateways():
+            raise ApiProblem(409, "变更认证或 API 地址前，请先删除网关并等待旧连接回收")
+        if self.manager.has_owned_clients:
+            raise ApiProblem(409, "旧连接回收或申请尚未完成，请稍后再试")
+        state = self.state_dir / "gateways.json"
+        if state.exists():
+            stored = json.loads(state.read_text(encoding="utf-8"))
+            if stored.get("owned_clients") or stored.get("owned"):
+                raise ApiProblem(409, "旧连接回收尚未完成，请稍后再试")
+
+    async def update_configuration(self, data):
+        if self.updating_credentials or self.gateway_operations:
+            raise ApiProblem(409, "网关或配置操作正在进行，请稍后再试")
+        self.updating_credentials = True
+        try:
+            candidate = self.config_editor.candidate(data)
+            identity_fields = (*CREDENTIAL_FIELDS, "api_base_url")
+            if any(candidate.get(key, DEFAULT_CONFIG.get(key)) != self.config.get(key, DEFAULT_CONFIG.get(key))
+                   for key in identity_fields):
+                await self._assert_account_idle()
+            snapshot = self.config_editor.save(candidate, data["revision"])
+            return self.configuration(snapshot)
+        finally:
+            self.updating_credentials = False
+
+    def validate_configuration(self, data):
+        candidate = self.config_editor.candidate(data)
+        submitted = parse_config(data["source"]) if "source" in data else data["config"]
+        submitted = {**submitted, **data.get("fields", {})}
+        # Return submitted secrets only, never resolved values from disk.
+        for key in CREDENTIAL_FIELDS:
+            candidate[key] = submitted.get(key, "")
+        return {"config": candidate, "source": json.dumps(candidate, ensure_ascii=False, indent=2)}
+
+    def clean_proxies(self):
+        if self.updating_credentials:
+            raise ApiProblem(409, "凭据更新正在进行，请稍后再试")
+        try:
+            if not getattr(self.client, "jwt", None) and not getattr(self.client, "api_key", None):
+                self.client.login()
+            res = self.client.clean_clients()
+        except Exception as exc:
+            raise ApiProblem(500, f"清理网页端 Proxies 失败: {exc}")
+        with self.account_lock:
+            self.account_cache = (0, None)
+        return {
+            "ok": True,
+            "proxies_removed": res.get("proxies_removed", 0),
+            "clients_reset": bool(res.get("clients_reset", False)),
+            "message": f"成功删除网页端 PROXIES 代理实例: {res.get('proxies_removed', 0)} 个"
+        }
 
     async def update_settings(self, data):
         if self.updating_credentials or self.gateway_operations:
@@ -152,7 +219,8 @@ class ManagementApp:
             raise ApiProblem(400, "请选择凭据类型并填写凭据")
         if len(value) > 8192:
             raise ApiProblem(400, "凭据过长")
-        candidate_config = dict(self.config)
+        current, revision, _, _ = self.config_editor.read()
+        candidate_config = dict(current)
         candidate_config.update({k: "" for k in CREDENTIAL_FIELDS})
         candidate_config[kind] = value.strip()
         candidate = build_client(candidate_config)
@@ -164,7 +232,7 @@ class ManagementApp:
             candidate_config["jwt_token"] = candidate.jwt
             candidate.auth_code = ""
             candidate.jwt_token = candidate.jwt
-        atomic_json(self.state_dir / "credentials.json", {k: candidate_config.get(k, "") for k in CREDENTIAL_FIELDS})
+        self.config_editor.save(candidate_config, revision)
         self.config = candidate_config
         self.client = candidate
         self.manager.client = candidate
@@ -184,6 +252,11 @@ class ManagementApp:
     async def gateway_mutation(self, method, gateway_id, action, data):
         if self.updating_credentials:
             raise ApiProblem(409, "凭据更新正在进行，请稍后操作网关")
+        if method == "POST" and not gateway_id:
+            saved, _, _, _ = self.config_editor.read()
+            if any(saved.get(key, DEFAULT_CONFIG.get(key)) != self.config.get(key, DEFAULT_CONFIG.get(key))
+                   for key in (*CREDENTIAL_FIELDS, "api_base_url")):
+                raise ApiProblem(409, "认证或 API 配置已更新，请先重启服务，再新建网关")
         self.gateway_operations += 1
         try:
             if method == "PUT" and gateway_id:
@@ -217,6 +290,13 @@ class ManagementApp:
         raise ApiProblem(404, "接口不存在")
 
     def dispatch(self, method, path, query, data):
+        if path == "/api/config":
+            if method == "GET":
+                return self.configuration()
+            if method == "PUT":
+                return self.call(self.update_configuration(data))
+        if path == "/api/config/validate" and method == "POST":
+            return self.validate_configuration(data)
         if path == "/api/gateways" and method == "GET":
             return {"gateways": self.call(self.manager.list_gateways())}
         if path == "/api/countries" and method == "GET":
@@ -225,6 +305,8 @@ class ManagementApp:
             return self.catalog.get(refresh=True)
         if path == "/api/account" and method == "GET":
             return self.account()
+        if path == "/api/proxies/clean" and method == "POST":
+            return self.clean_proxies()
         if path == "/api/settings":
             if method == "GET":
                 return self.settings()
@@ -250,6 +332,7 @@ class ManagementServer(ThreadingHTTPServer):
         self.app = app
         self.slots = threading.BoundedSemaphore(32)
         super().__init__(address, ManagementHandler)
+        self.app.web_port = self.server_port
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
@@ -332,11 +415,13 @@ class ManagementHandler(BaseHTTPRequestHandler):
                 if self.headers.get("Transfer-Encoding"):
                     raise ApiProblem(400, "不支持分块管理请求")
                 length = int(self.headers.get("Content-Length", "0"))
-                if not 0 <= length <= 16384:
+                limit = 524288 if path in ("/api/config", "/api/config/validate") else 16384
+                if not 0 <= length <= limit:
                     raise ApiProblem(413, "请求体过大")
                 raw_body = self.rfile.read(length)
                 self._body_read = True
-                data = json.loads(raw_body or b"{}")
+                data = parse_config((raw_body or b"{}").decode("utf-8"),
+                                    max_bytes=limit, allow_comments=False)
                 if not isinstance(data, dict):
                     raise ApiProblem(400, "请求体应为 JSON 对象")
             if self.command == "POST" and path == "/api/login":
@@ -357,6 +442,10 @@ class ManagementHandler(BaseHTTPRequestHandler):
                 self._send(200, app.dispatch(self.command, path, parsed.query, data))
         except ApiProblem as exc:
             self._send(exc.code, {"error": exc.message})
+        except ConfigConflict as exc:
+            self._send(409, {"error": str(exc)})
+        except ConfigError as exc:
+            self._send(400, {"error": str(exc)})
         except KeyError:
             self._send(404, {"error": "网关或资源不存在"})
         except (ValueError, TypeError):
@@ -372,14 +461,14 @@ class ManagementHandler(BaseHTTPRequestHandler):
     do_DELETE = _handle
 
 
-def serve(config, *, host="127.0.0.1", port=8888, state_dir=None, open_browser=False):
+def serve(config, *, host="127.0.0.1", port=8777, state_dir=None, open_browser=False):
     if host not in ("127.0.0.1", "localhost"):
         raise ValueError("管理界面仅监听 127.0.0.1 / localhost")
     if not 1 <= port <= 65535:
         raise ValueError("管理端口应在 1–65535")
     state_dir = Path(state_dir or ROOT / ".local")
     lock = ProcessLock(state_dir / "manager.lock")
-    app = ManagementApp(config, state_dir)
+    app = ManagementApp(config, state_dir, web_port=port)
     server = None
     try:
         # Bind before restoring remote resources; a conflicting process does not allocate clients.

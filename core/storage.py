@@ -10,7 +10,7 @@ def atomic_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as file:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as file:
             json.dump(data, file, ensure_ascii=False, indent=2)
             file.flush()
             os.fsync(file.fileno())

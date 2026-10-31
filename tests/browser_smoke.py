@@ -47,7 +47,8 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         client = BrowserClient()
         manager = GatewayManager(client, Path(directory)/"gateways.json", probe=probe)
-        app = ManagementApp({}, directory, manager=manager, client=client)
+        app = ManagementApp({}, directory, manager=manager, client=client,
+                            config_path=Path(directory) / "config.json")
         server = ManagementServer(("127.0.0.1", 0), app)
         app.start()
         thread = threading.Thread(target=server.serve_forever, daemon=True)

@@ -25,7 +25,7 @@
         <button class="nav-item active" type="button" data-view="gateways" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg><span>网关总览</span><span id="nav-gateway-count" class="nav-count">—</span></button>
         <button class="nav-item" type="button" data-view="countries"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg><span>国家与地区</span></button>
         <button class="nav-item" type="button" data-view="events"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h11v18H5V6M8 3v5H3M9 12h6M9 16h6"/></svg><span>事件日志</span></button>
-        <button class="nav-item" type="button" data-view="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="3"/><circle cx="16" cy="17" r="3"/></svg><span>连接设置</span></button>
+        <button class="nav-item" type="button" data-view="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="3"/><circle cx="16" cy="17" r="3"/></svg><span>配置面板</span></button>
       </nav>
       <div class="sidebar-bottom">
         <div class="local-note"><span class="secure-icon" aria-hidden="true">⌁</span><strong>流量由你掌控</strong><p>固定本地入口<br>独立网关 · 自动恢复</p></div>
@@ -57,7 +57,13 @@
               <div class="panel recent-panel"><div class="section-heading"><h2>最近动态</h2><button class="text-button" data-view="events" type="button">查看全部 <span aria-hidden="true">→</span></button></div><p id="recent-events-error" class="notice error" hidden></p><div id="recent-events" class="event-preview"><p class="muted">正在加载事件…</p></div></div>
             </section>
             <aside class="insights" aria-label="账户与位置数据">
-              <section class="panel quota-panel" aria-labelledby="quota-heading"><div class="section-heading"><h2 id="quota-heading">账户配额</h2><button id="refresh-account" class="icon-button small" type="button" aria-label="刷新账户配额" title="刷新账户配额">↻</button></div><p id="account-error" class="notice error" role="alert" hidden></p><div id="account-data" aria-busy="true"><p class="muted">正在获取账户信息…</p></div><p class="footnote">上游账户即时快照，配额以账户返回为准。</p></section>
+              <section class="panel quota-panel" aria-labelledby="quota-heading"><div class="section-heading"><h2 id="quota-heading">账户配额</h2><button id="refresh-account" class="icon-button small" type="button" aria-label="刷新账户配额" title="刷新账户配额">↻</button></div><p id="account-error" class="notice error" role="alert" hidden></p><div id="account-data" aria-busy="true"><p class="muted">正在获取账户信息…</p></div><p class="footnote">上游账户即时快照，配额以账户返回为准。</p>
+              <div class="quota-actions">
+                <button id="btn-quick-clean-proxies" class="button secondary small full-width" type="button" title="清理并重置所有代理与历史客户端 (完全清空网页 Proxies)">
+                  <span aria-hidden="true">🧹</span> 清理并重置网页端 Proxies
+                </button>
+              </div>
+            </section>
               <section class="panel country-summary"><div class="section-heading"><h2>全球位置数据</h2><span class="globe-icon" aria-hidden="true">◎</span></div><div class="coverage-number"><span id="coverage-count">—</span><small>个国家 / 地区</small></div><p>按国家绑定出口，或交由网络自动选择。</p><div class="source-details"><span>数据来源</span><strong id="country-source" data-country-source>等待获取</strong><span>更新时间</span><time id="country-updated" data-country-updated>—</time></div><p id="country-stale" class="notice" data-country-stale hidden></p><button class="button secondary full-width" type="button" data-view="countries">浏览全部国家 <span aria-hidden="true">↗</span></button></section>
               <div class="tip-card"><span class="tip-icon" aria-hidden="true">i</span><div><strong>一个端口，两种协议</strong><p>每个网关同时支持 HTTP 和 SOCKS5。回环连接默认无需本地代理密码。</p></div></div>
             </aside>
@@ -69,7 +75,23 @@
           <div class="panel country-data-bar"><div><span class="muted">数据来源</span><strong data-country-source>等待获取</strong></div><div><span class="muted">快照时间</span><time data-country-updated>—</time></div><span class="notice" data-country-stale hidden></span></div>
           <p class="footnote">提供者数量来自位置接口，不与地图汇总混算；快照数量不代表此刻一定可建立连接。</p>
           <p id="countries-error" class="notice error" role="alert" hidden></p>
-          <div class="country-toolbar"><div class="search-field wide"><span aria-hidden="true">⌕</span><label class="sr-only" for="country-search">搜索国家或地区</label><input id="country-search" type="search" placeholder="搜索国家 / 地区，如 日本、Japan、JP" autocomplete="off"></div><span id="country-result-count" class="muted">正在加载…</span></div>
+          <div class="country-toolbar">
+            <div class="search-field wide">
+              <span aria-hidden="true">⌕</span>
+              <label class="sr-only" for="country-search">搜索国家或地区</label>
+              <input id="country-search" type="search" placeholder="搜索国家 / 地区，如 日本、Japan、JP" autocomplete="off">
+            </div>
+            <div class="country-sort-control">
+              <label for="country-sort">排序：</label>
+              <select id="country-sort" aria-label="国家与地区排序方式">
+                <option value="providers-desc" selected>节点数量从多到少</option>
+                <option value="name-asc">国家名称 (拼音 / A-Z)</option>
+                <option value="providers-asc">节点数量从少到多</option>
+                <option value="code-asc">国家代码 (A-Z)</option>
+              </select>
+            </div>
+            <span id="country-result-count" class="muted">正在加载…</span>
+          </div>
           <div id="country-list" class="country-grid" aria-busy="true"></div>
         </section>
 
@@ -79,8 +101,34 @@
         </section>
 
         <section id="view-settings" class="view" aria-labelledby="settings-heading" hidden>
-          <div class="page-heading"><div><p class="eyebrow">CONNECTION SETTINGS</p><h1 id="settings-heading">连接设置</h1><p class="subtitle">管理上游账户凭据，与本地控制台登录令牌相互独立。</p></div><button id="refresh-settings" class="button secondary" type="button">↻ 刷新状态</button></div>
-          <div class="settings-grid"><section class="panel"><div class="section-heading"><h2>上游凭据</h2><span id="configured-badge" class="badge neutral">待获取</span></div><p id="settings-load-error" class="notice error" role="alert" hidden></p><dl class="settings-info"><div><dt>当前凭据类型</dt><dd id="current-credential-type">—</dd></div><div><dt>API 地址</dt><dd id="api-base-url">—</dd></div></dl><p id="credential-lock" class="notice warning">请先确认网关列表为空，再更新凭据。</p><form id="settings-form"><fieldset id="settings-fields" disabled><label for="credential-type">新凭据类型</label><select id="credential-type" required><option value="api_key">API Key</option><option value="seedphrase">助记词（Seedphrase）</option><option value="jwt_token">JWT Token</option><option value="auth_code">授权码（Auth Code）</option></select><label for="credential">新凭据</label><input id="credential" type="password" required autocomplete="new-password" spellcheck="false" placeholder="仅用于提交，不回显已保存凭据" aria-describedby="credential-hint"><p id="credential-hint" class="field-hint">提交后立即清空输入。请勿把凭据粘贴到网关名称或日志。</p><button id="settings-save" class="button primary" type="submit">更新凭据</button></fieldset><p id="settings-error" class="notice error" role="alert" hidden></p><p id="settings-success" class="notice positive" role="status" hidden></p></form></section><aside><div class="panel"><h2>切换账户前</h2><ol class="settings-steps"><li>先删除全部网关。</li><li>等待旧代理资源回收完成。</li><li>更新凭据后，再新建网关。</li></ol><p class="muted">避免旧账号留下无人管理的代理资源。回收未完成时，服务端仍会拒绝更新。</p><hr><h3>本地保存，隔离配置</h3><p class="muted">新凭据写入 <code>.local/credentials.json</code>，不会修改用户的 <code>config.json</code>。</p><p class="footnote">浏览器不缓存凭据；会话使用 HttpOnly Cookie。</p></div></aside></div>
+          <div class="page-heading"><div><p class="eyebrow">WORKSPACE CONFIGURATION</p><h1 id="settings-heading">配置面板</h1><p class="subtitle">用表单调整，或直接编辑源码。所有修改写入同一份 config.json。</p></div><button id="refresh-settings" class="button secondary" type="button">↻ 重新读取文件</button></div>
+          <div class="config-file-bar"><span class="config-file-icon" aria-hidden="true">{ }</span><div><strong>config.json</strong><span>项目配置 · 与命令行共用</span></div><span id="config-dirty" class="badge neutral" role="status">正在读取</span></div>
+          <p id="settings-load-error" class="notice error" role="alert" hidden></p>
+          <p id="config-restart" class="notice warning" role="status" hidden></p>
+          <p id="config-legacy" class="notice warning" hidden></p>
+          <div class="config-layout">
+            <form id="settings-form" class="panel config-editor" novalidate>
+              <div class="config-editor-toolbar"><div class="config-tabs" role="tablist" aria-label="配置编辑模式"><button id="config-tab-form" type="button" role="tab" aria-selected="true" aria-controls="config-visual">可视化编辑</button><button id="config-tab-source" type="button" role="tab" aria-selected="false" aria-controls="config-code" tabindex="-1">源码编辑 <span>JSONC</span></button></div><span class="config-local-label">本地文件</span></div>
+              <fieldset id="settings-fields" disabled>
+                <div id="config-visual" role="tabpanel" aria-labelledby="config-tab-form">
+                  <section class="config-section"><div class="config-section-title"><span aria-hidden="true">01</span><div><h2>控制台与请求</h2><p>管理入口和上游请求的基础参数</p></div></div><div class="form-row"><div><label for="config-web_port">管理端口 <code>web_port</code></label><input id="config-web_port" data-config-field="web_port" type="number" min="1" max="65535" step="1" required><p class="field-hint">默认 8777 · 不是 HTTP / SOCKS5 代理端口</p></div><div><label for="config-timeout_seconds">请求超时 <code>timeout_seconds</code></label><div class="config-input-unit"><input id="config-timeout_seconds" data-config-field="timeout_seconds" type="number" min="1" max="300" step="1" required><span>秒</span></div><p class="field-hint">范围 1–300 秒，默认 15 秒</p></div></div></section>
+                  <section class="config-section"><div class="config-section-title"><span aria-hidden="true">02</span><div><h2>默认出口策略</h2><p>命令行默认选择；不修改已创建网关的绑定</p></div></div><div class="form-row"><div><label for="config-default_mode">路由模式 <code>default_mode</code></label><select id="config-default_mode" data-config-field="default_mode"><option value="best">全球最佳 · best</option><option value="country">指定国家 · country</option><option value="city">指定城市 · city</option></select></div><div><label for="config-default_country">默认国家 <code>default_country</code></label><input id="config-default_country" data-config-field="default_country" type="text" minlength="2" maxlength="2" pattern="[A-Za-z]{2}" placeholder="US" spellcheck="false" required></div></div><p id="config-route-hint" class="field-hint">两位国家代码，如 US、JP、DE。城市模式通过命令行 --target 指定城市。</p></section>
+                  <section class="config-section"><div class="config-section-title"><span aria-hidden="true">03</span><div><h2>服务端点</h2><p>通常保持默认；变更 API 地址前先回收网关</p></div></div><label for="config-api_base_url">API 网关 <code>api_base_url</code></label><input id="config-api_base_url" data-config-field="api_base_url" type="url" spellcheck="false" required><label for="config-ur_base_url">主站地址 <code>ur_base_url</code></label><input id="config-ur_base_url" data-config-field="ur_base_url" type="url" spellcheck="false" required><p class="field-hint">保留主站配置兼容 CLI；国家列表仍由 API 的 provider-locations 提供。</p></section>
+                  <section class="config-section"><div class="config-section-title"><span aria-hidden="true">04</span><div><h2>认证凭据</h2><p>与本地管理令牌相互独立</p></div></div><p class="notice">已保存值以 <code>__KEEP_EXISTING__</code> 遮罩；保持不变即保留，输入新值替换，清空字段删除。通常只需配置一种认证。</p><p id="credential-lock" class="field-hint"></p><div class="form-row config-credentials"><div><label for="config-api_key">API Key <code>api_key</code></label><input id="config-api_key" data-config-field="api_key" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192" placeholder="未配置"></div><div><label for="config-jwt_token">JWT Token <code>jwt_token</code></label><input id="config-jwt_token" data-config-field="jwt_token" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192" placeholder="未配置"></div><div><label for="config-seedphrase">恢复助记词 <code>seedphrase</code></label><input id="config-seedphrase" data-config-field="seedphrase" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192" placeholder="未配置"></div><div><label for="config-auth_code">临时授权码 <code>auth_code</code></label><input id="config-auth_code" data-config-field="auth_code" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192" placeholder="未配置"></div><div><label for="config-email">登录邮箱 <code>email</code></label><input id="config-email" data-config-field="email" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192" placeholder="未配置"></div><div><label for="config-password">登录密码 <code>password</code></label><input id="config-password" data-config-field="password" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192" placeholder="未配置"></div></div><p class="field-hint">读取优先级与客户端一致：API Key → JWT → 授权码 → 邮箱/密码 → 助记词。授权码为临时凭据，保存不执行兑换。</p></section>
+                </div>
+                <div id="config-code" role="tabpanel" aria-labelledby="config-tab-source" hidden>
+                  <div class="config-code-toolbar"><span><span class="tiny-dot success"></span> config.json</span><button id="config-format" class="text-button" type="button">校验并格式化</button></div><label class="sr-only" for="config-source">config.json 配置源码</label><textarea id="config-source" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off" aria-describedby="config-source-hint" aria-label="config.json 配置源码"></textarea><div class="config-code-footer"><span id="config-line-count">0 行</span><span>UTF-8 · JSONC</span></div><p id="config-source-hint" class="field-hint">支持 // 注释、/* 注释 */ 和尾逗号。保存时转为格式化 JSON，不保留注释；扩展字段保留。占位符只用于界面，原凭据不会被覆盖。</p>
+                </div>
+              </fieldset>
+              <div class="config-feedback"><p id="settings-error" class="notice error" role="alert" hidden></p><p id="settings-success" class="notice positive" role="status" hidden></p></div>
+              <div class="config-savebar"><p>保存至 <strong>config.json</strong><small>重启后生效 · 不自动中断连接</small></p><div><button id="config-discard" class="button secondary" type="button">撤销修改</button><button id="settings-save" class="button primary" type="submit" disabled>保存配置</button></div></div>
+            </form>
+            <aside class="config-sidebar">
+              <section class="panel"><div class="section-heading"><h2>文件概况</h2><span id="configured-badge" class="badge neutral">待获取</span></div><dl class="config-facts"><div><dt>认证方式</dt><dd id="current-credential-type">—</dd></div><div><dt>当前监听端口</dt><dd><code id="web-server-port">—</code></dd></div><div><dt>文件配置端口</dt><dd><code id="config-saved-port">—</code></dd></div><div><dt>文件 API 地址</dt><dd id="api-base-url">—</dd></div></dl><p class="field-hint">启动参数 <code>--web-port</code> 优先于文件中的端口设置。</p></section>
+              <section class="panel config-help"><h2>两种编辑，同一配置</h2><ol><li><strong>编辑</strong><span>表单覆盖常用参数；源码可修改扩展字段。</span></li><li><strong>保存</strong><span>校验通过后原子写入，磁盘有新改动时提示冲突。</span></li><li><strong>重启</strong><span>重新运行 start_web.bat，使用新的配置和管理链接。</span></li></ol><p class="field-hint">草稿仅在当前页面内存中，浏览器不持久化凭据。保存失败会保留输入。</p></section>
+              <details class="panel config-maintenance"><summary>代理与客户端维护</summary><p class="field-hint">与命令行菜单 [7] / --clean 一致；此操作独立于保存配置。</p><button id="btn-settings-clean-proxies" class="button danger full-width" type="button">清理并重置所有代理</button><p id="clean-status" class="notice" role="status" hidden></p></details>
+            </aside>
+          </div>
         </section>
         <footer class="page-footer"><span>URnetwork <span class="footer-dot">·</span> 让连接保持简单</span><span>仅回环监听 <span class="footer-dot">·</span> HTTP + SOCKS5</span></footer>
       </main>
@@ -94,8 +142,42 @@
   <dialog id="gateway-dialog" aria-labelledby="gateway-dialog-heading">
     <form id="gateway-form" novalidate>
       <div class="dialog-heading"><div><p class="eyebrow">LOCAL GATEWAY</p><h2 id="gateway-dialog-heading">新建网关</h2></div><button class="icon-button" id="gateway-close" type="button" aria-label="关闭网关表单">×</button></div>
-      <fieldset id="gateway-fields"><label for="gateway-name">网关名称</label><input id="gateway-name" type="text" maxlength="100" required placeholder="例如：东京 · 开发环境" autocomplete="off"><div class="form-row"><div><label for="gateway-host">监听地址</label><select id="gateway-host"><option value="127.0.0.1">127.0.0.1（IPv4 回环）</option><option value="::1">::1（IPv6 回环）</option></select></div><div><label for="gateway-port">本地端口</label><input id="gateway-port" type="number" min="1" max="65535" step="1" value="1080" required inputmode="numeric" aria-describedby="port-error"><p id="port-error" class="field-error" role="alert" hidden></p></div></div><p class="field-hint">同一端口接受 HTTP / SOCKS5；默认无需本地代理密码。</p><label for="gateway-mode">出口选择</label><select id="gateway-mode"><option value="country">绑定国家 / 地区</option><option value="best">自动选择最佳节点</option></select><div id="country-picker"><label for="gateway-country-search">搜索国家 / 地区</label><input id="gateway-country-search" type="search" placeholder="中文、English 或国家代码" autocomplete="off"><label class="sr-only" for="gateway-country">选择出口国家或地区</label><select id="gateway-country" size="5" aria-describedby="country-picker-note"></select><p id="country-picker-note" class="field-hint"></p><p id="country-picker-error" class="field-error" role="alert" hidden></p><p class="field-hint">无可用同国节点时保留国家绑定，不会静默切换国家。</p></div><label class="check-label" for="gateway-auto-heal"><input id="gateway-auto-heal" type="checkbox" checked><span>启用自动恢复<small>连续检查失败后，尝试在原绑定范围内换线。</small></span></label><div class="form-row" id="heal-options"><div><label for="gateway-interval">检查间隔（秒）</label><input id="gateway-interval" type="number" min="5" max="3600" step="1" value="30" required></div><div><label for="gateway-failures">连续失败阈值（次）</label><input id="gateway-failures" type="number" min="1" max="100" step="1" value="3" required></div></div></fieldset><p id="gateway-error" class="notice error" role="alert" hidden></p><div class="dialog-footer"><button id="gateway-cancel" class="button secondary" type="button">取消</button><button id="gateway-save" class="button primary" type="submit">创建并启动</button></div>
+      <fieldset id="gateway-fields"><label for="gateway-name">网关名称</label><input id="gateway-name" type="text" maxlength="100" required placeholder="例如：东京 · 开发环境" autocomplete="off"><div class="form-row"><div><label for="gateway-host">监听地址</label><select id="gateway-host"><option value="127.0.0.1">127.0.0.1（IPv4 回环）</option><option value="::1">::1（IPv6 回环）</option></select></div><div><label for="gateway-port">本地端口</label><input id="gateway-port" type="number" min="1" max="65535" step="1" value="1080" required inputmode="numeric" aria-describedby="port-error"><p id="port-error" class="field-error" role="alert" hidden></p></div></div><p class="field-hint">同一端口接受 HTTP / SOCKS5；默认无需本地代理密码。</p><label for="gateway-mode">出口选择</label><select id="gateway-mode"><option value="country">绑定国家 / 地区</option><option value="best">自动选择最佳节点</option></select><div id="country-picker">
+            <div class="country-picker-header">
+              <label for="gateway-country-search">搜索国家 / 地区</label>
+              <div class="country-picker-sort">
+                <label for="gateway-country-sort">排序：</label>
+                <select id="gateway-country-sort" aria-label="出口国家排序方式">
+                  <option value="providers-desc" selected>节点数 (多到少)</option>
+                  <option value="name-asc">名称排序</option>
+                  <option value="providers-asc">节点数 (少到多)</option>
+                </select>
+              </div>
+            </div>
+            <input id="gateway-country-search" type="search" placeholder="中文、English 或国家代码" autocomplete="off">
+            <label class="sr-only" for="gateway-country">选择出口国家或地区</label>
+            <select id="gateway-country" size="5" aria-describedby="country-picker-note"></select>
+            <p id="country-picker-note" class="field-hint"></p>
+            <p id="country-picker-error" class="field-error" role="alert" hidden></p>
+            <p class="field-hint">无可用同国节点时保留国家绑定，不会静默切换国家。</p>
+          </div><label class="check-label" for="gateway-auto-heal"><input id="gateway-auto-heal" type="checkbox" checked><span>启用自动恢复<small>连续检查失败后，尝试在原绑定范围内换线。</small></span></label><div class="form-row" id="heal-options"><div><label for="gateway-interval">检查间隔（秒）</label><input id="gateway-interval" type="number" min="5" max="3600" step="1" value="30" required></div><div><label for="gateway-failures">连续失败阈值（次）</label><input id="gateway-failures" type="number" min="1" max="100" step="1" value="3" required></div></div></fieldset><p id="gateway-error" class="notice error" role="alert" hidden></p><div class="dialog-footer"><button id="gateway-cancel" class="button secondary" type="button">取消</button><button id="gateway-save" class="button primary" type="submit">创建并启动</button></div>
     </form>
+  </dialog>
+
+  <dialog id="clean-confirm-dialog" class="compact-dialog" aria-labelledby="clean-dialog-heading">
+    <div class="delete-symbol" aria-hidden="true">🧹</div>
+    <h2 id="clean-dialog-heading">清理并重置所有代理与客户端</h2>
+    <p class="muted">该操作与命令行 <code>--clean</code> 及菜单 <code>[7]</code> 行为完全一致：</p>
+    <ul class="settings-steps">
+      <li>逐个删除 <strong>https://ur.io</strong> 网页端 PROXIES 列表中的全部代理实例</li>
+      <li>重置并发客户端连接会话计数 (POST /network/remove-clients)</li>
+      <li>刷新官方网页后，右侧 Proxies 列表将彻底清空</li>
+    </ul>
+    <p class="notice warning">提示：若当前有正在运行的本地网关，网关的上游代理将被清除，网关会在下次请求或检测时自动重新分配。</p>
+    <div class="dialog-footer">
+      <button id="clean-cancel" class="button secondary" type="button">取消</button>
+      <button id="clean-confirm-btn" class="button danger" type="button">确认清空并重置</button>
+    </div>
   </dialog>
 
   <dialog id="delete-dialog" class="compact-dialog" aria-labelledby="delete-heading"><div class="delete-symbol" aria-hidden="true">!</div><h2 id="delete-heading">删除这个网关？</h2><p id="delete-description" class="muted"></p><p class="notice warning">此操作会关闭本地入口与现有连接，并回收本工具管理的代理资源。</p><p id="delete-error" class="notice error" role="alert" hidden></p><div class="dialog-footer"><button id="delete-cancel" class="button secondary" type="button">保留网关</button><button id="confirm-delete" class="button danger" type="button">确认删除</button></div></dialog>

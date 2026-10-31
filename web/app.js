@@ -14,9 +14,10 @@
     gatewaysReady: false, settingsReady: false, countryData: null, after: 0,
     loads: new Map(), controllers: new Set(), timers: [], pending: new Set(),
     errors: new Map(), editing: null, deleting: null, gatewayRender: '',
-    savingGateway: false, savingSettings: false, loggingIn: false, view: 'gateways'
+    savingGateway: false, savingSettings: false, loggingIn: false, view: 'gateways',
+    configSnapshot: null, configDraft: {}, configMode: 'form', configDirty: false, configLoading: false
   };
-  const credentialNames = { api_key: 'API Key', seedphrase: '助记词', jwt_token: 'JWT Token', auth_code: '授权码' };
+  const credentialNames = { api_key: 'API Key', seedphrase: '助记词', jwt_token: 'JWT Token', auth_code: '授权码', email: '邮箱 / 密码', password: '邮箱 / 密码' };
   const eventMessages = {
     created: '网关已创建', upstream_ready: '上游连接已就绪', stopped: '网关已停止',
     deleted: '网关已删除', updated: '网关设置已更新', network_offline: '网络离线，等待恢复',
@@ -186,17 +187,21 @@
     state.timers = [];
     state.controllers.forEach((controller) => controller.abort());
     state.loads.clear();
-    state.gateways = []; state.countries = []; state.events = []; state.after = 0;
+    state.gateways = []; state.countries = []; state.rawCountries = []; state.events = []; state.after = 0;
     state.gatewaysReady = false; state.settingsReady = false; state.countryData = null;
     state.pending.clear(); state.errors.clear(); state.editing = null; state.deleting = null;
     state.gatewayRender = ''; state.savingGateway = false; state.savingSettings = false;
     document.querySelectorAll('dialog[open]').forEach((dialog) => dialog.close());
     ['gateway-list', 'country-list', 'event-list', 'recent-events', 'account-data', 'toasts'].forEach((id) => $(id).replaceChildren());
     document.querySelectorAll('.notice, .field-error').forEach((element) => { element.hidden = true; element.textContent = ''; });
-    ['login-token', 'credential', 'copy-value', 'gateway-name', 'gateway-search', 'country-search'].forEach((id) => { $(id).value = ''; });
+    ['login-token', 'copy-value', 'gateway-name', 'gateway-search', 'country-search'].forEach((id) => { $(id).value = ''; });
     ['stat-total', 'stat-running', 'stat-countries', 'stat-connections', 'coverage-count', 'current-credential-type', 'api-base-url'].forEach((id) => { $(id).textContent = '—'; });
     document.querySelectorAll('[data-country-source], [data-country-updated]').forEach((element) => { element.textContent = '—'; });
     $('event-gateway').replaceChildren(new Option('全部网关', ''));
+    state.configSnapshot = null; state.configDraft = {}; state.configDirty = false; state.configLoading = false;
+    document.querySelectorAll('[data-config-field]').forEach((input) => { input.value = ''; });
+    $('config-source').value = '';
+    ['web-server-port', 'config-saved-port'].forEach((id) => { $(id).textContent = '—'; });
     updateCredentialLock();
     openLogin(reason);
   }
@@ -437,10 +442,28 @@
     });
   }
 
+    function sortCountries(countries, sortKey = 'providers-desc') {
+    const list = [...countries];
+    switch (sortKey) {
+      case 'providers-desc':
+        return list.sort((a, b) => (b.providers - a.providers) || countryName(a).localeCompare(countryName(b), 'zh-CN'));
+      case 'providers-asc':
+        return list.sort((a, b) => (a.providers - b.providers) || countryName(a).localeCompare(countryName(b), 'zh-CN'));
+      case 'name-asc':
+        return list.sort((a, b) => countryName(a).localeCompare(countryName(b), 'zh-CN'));
+      case 'code-asc':
+        return list.sort((a, b) => a.code.localeCompare(b.code));
+      default:
+        return list.sort((a, b) => (b.providers - a.providers) || countryName(a).localeCompare(countryName(b), 'zh-CN'));
+    }
+  }
+
   function acceptCountries(data) {
     if (!Array.isArray(data.countries)) throw new Error('国家列表格式异常，请刷新重试。');
     state.countryData = data;
-    state.countries = [...data.countries].sort((a, b) => countryName(a).localeCompare(countryName(b), 'zh-CN'));
+    state.rawCountries = data.countries;
+    const sortVal = $('country-sort')?.value || 'providers-desc';
+    state.countries = sortCountries(data.countries, sortVal);
     $('stat-countries').textContent = state.countries.length;
     $('coverage-count').textContent = state.countries.length;
     document.querySelectorAll('[data-country-source]').forEach((element) => { element.textContent = data.source || '未提供来源'; });
@@ -456,6 +479,9 @@
   }
 
   function renderCountries() {
+    const sortVal = $('country-sort')?.value || 'providers-desc';
+    const sourceList = state.rawCountries ? [...state.rawCountries] : [...state.countries];
+    state.countries = sortCountries(sourceList, sortVal);
     const countries = state.countries.filter((country) => countryMatches(country, $('country-search').value));
     $('country-result-count').textContent = `显示 ${countries.length} / ${state.countries.length} 个国家与地区`;
     if (!countries.length) { renderEmpty($('country-list'), state.countries.length ? '没有匹配的国家' : '当前没有可用国家', '试试英文名称或国家代码，也可以刷新位置数据。'); return; }
@@ -474,7 +500,10 @@
 
   function renderCountryOptions(preferred) {
     const selected = preferred === undefined ? $('gateway-country').value : preferred;
-    const countries = state.countries.filter((country) => countryMatches(country, $('gateway-country-search').value));
+    const sortVal = $('gateway-country-sort')?.value || $('country-sort')?.value || 'providers-desc';
+    let countries = state.rawCountries ? [...state.rawCountries] : [...state.countries];
+    countries = sortCountries(countries, sortVal);
+    countries = countries.filter((country) => countryMatches(country, $('gateway-country-search').value));
     const options = countries.map((country) => new Option(`${countryName(country)} · ${country.name || regionName(country.code, 'en')} (${country.code}) · ${amount(country.providers)} 提供者`, String(country.location_id)));
     const current = state.editing;
     if (current?.mode === 'country' && current.location_id && !state.countries.some((country) => String(country.location_id) === String(current.location_id)) && !$('gateway-country-search').value) {
@@ -622,49 +651,127 @@
     $('account-data').replaceChildren(title, remaining, progress, values, details);
   }
 
-  function loadSettings() {
+  // Configuration drafts stay in memory; the server never returns existing secrets.
+  function configInputs() { return [...document.querySelectorAll('[data-config-field]')]; }
+
+  function writeConfigForm() {
+    configInputs().forEach((input) => { input.value = state.configDraft[input.dataset.configField] ?? ''; });
+  }
+
+  function collectConfigForm() {
+    // Only patch known fields; the authoritative JSONC source stays as text so
+    // unknown integers/decimals never roundtrip through JavaScript Number.
+    const draft = {};
+    configInputs().forEach((input) => {
+      const key = input.dataset.configField;
+      draft[key] = input.type === 'number' && input.value !== '' ? Number(input.value) : input.value;
+    });
+    return draft;
+  }
+
+  function configLines() { $('config-line-count').textContent = `${$('config-source').value.split('\n').length} 行`; }
+
+  function setConfigMode(mode) {
+    state.configMode = mode;
+    ['form', 'source'].forEach((name) => {
+      const tab = $(`config-tab-${name}`);
+      tab.setAttribute('aria-selected', String(mode === name));
+      tab.tabIndex = mode === name ? 0 : -1;
+    });
+    $('config-visual').hidden = mode !== 'form';
+    $('config-code').hidden = mode !== 'source';
+    configLines();
+  }
+
+  function acceptConfiguration(data) {
+    if (!data.config || typeof data.source !== 'string' || typeof data.revision !== 'string') throw new Error('配置响应格式异常。');
+    state.configSnapshot = data;
+    state.configDraft = { ...data.config };
+    state.settingsReady = true;
+    state.configDirty = false;
+    writeConfigForm(); $('config-source').value = data.source; configLines();
+    const kind = ['api_key', 'jwt_token', 'auth_code', 'email', 'password', 'seedphrase'].find((key) => data.config[key]);
+    $('current-credential-type').textContent = credentialNames[kind] || '未配置';
+    $('configured-badge').textContent = kind ? '已配置' : '未配置';
+    $('configured-badge').className = `badge ${kind ? 'good' : 'neutral'}`;
+    $('api-base-url').textContent = data.config.api_base_url;
+    $('web-server-port').textContent = String(data.active_port);
+    $('config-saved-port').textContent = String(data.config.web_port);
+    message('config-restart', data.restart_required ? '文件配置已更新，重启服务后生效；当前连接仍使用启动时的配置。' : '', 'warning');
+    message('config-legacy', data.legacy_credentials ? '检测到旧版独立凭据：本次保存会迁入 config.json，并在 .local 中保留原凭据备份。' : '', 'warning');
+    updateCredentialLock();
+  }
+
+  function loadSettings(force = false) {
+    // Navigation/polling must never replace an in-progress draft.
+    if (!state.authenticated || state.savingSettings || (state.configSnapshot && !force)) return Promise.resolve();
     return loadSection('settings', 'refresh-settings', 'settings-load-error', async () => {
+      state.configLoading = true; updateCredentialLock();
       try {
-        const data = await api('/api/settings');
-        state.settingsReady = true;
-        $('current-credential-type').textContent = credentialNames[data.credential_type] || data.credential_type || '未设置';
-        $('api-base-url').textContent = data.api_base_url || '未提供';
-        $('configured-badge').textContent = data.configured ? '已配置' : '未配置';
-        $('configured-badge').className = `badge ${data.configured ? 'good' : 'warning'}`;
-        message('settings-load-error', '');
-      } catch (error) { state.settingsReady = false; throw error; }
-      finally { updateCredentialLock(); }
+        acceptConfiguration(await api('/api/config'));
+        message('settings-load-error', ''); message('settings-error', ''); message('settings-success', '');
+      } finally { state.configLoading = false; updateCredentialLock(); }
     });
   }
 
   function updateCredentialLock() {
-    const ready = state.authenticated && state.gatewaysReady && state.settingsReady;
-    const locked = !ready || state.gateways.length > 0 || state.pending.size > 0 || state.savingGateway || state.savingSettings;
+    const locked = !state.authenticated || !state.settingsReady || state.savingSettings || state.configLoading;
     $('settings-fields').disabled = locked;
-    $('credential-lock').textContent = !ready ? '正在确认网关与连接设置；同步成功后可更新凭据。' : state.gateways.length ? `当前有 ${state.gateways.length} 个网关。请先删除全部网关，并等待旧资源回收后更新凭据。` : '网关列表为空。请确认旧代理资源已回收；服务端将再次检查后保存凭据。';
+    ['settings-save', 'config-tab-form', 'config-tab-source', 'config-discard'].forEach((id) => { $(id).disabled = locked; });
+    $('refresh-settings').disabled = state.savingSettings || state.configLoading;
+    $('credential-lock').textContent = state.gateways.length ? `当前有 ${state.gateways.length} 个网关：可保存一般参数；变更认证或 API 地址前，请删除网关并等待资源回收。` : '变更认证或 API 地址时，服务端会检查旧代理资源是否回收完成。';
+    $('config-dirty').textContent = state.savingSettings ? '正在处理…' : state.configLoading ? '正在读取…' : !state.settingsReady ? '等待读取' : state.configDirty ? '有未保存修改' : '已与文件同步';
+    $('config-dirty').className = `badge ${state.configDirty ? 'warning' : state.settingsReady ? 'good' : 'neutral'}`;
+  }
+
+  function markConfigDirty() {
+    state.configDirty = true;
+    if (state.configMode === 'form') state.configDraft = collectConfigForm();
+    message('settings-success', ''); message('settings-error', '');
+    configLines(); updateCredentialLock();
+  }
+
+  async function switchConfigMode(mode, format = false) {
+    if (state.savingSettings || !state.settingsReady || (mode === state.configMode && !format)) return;
+    message('settings-error', '');
+    const payload = { source: $('config-source').value, revision: state.configSnapshot.revision };
+    if (state.configMode === 'form') payload.fields = collectConfigForm();
+    state.savingSettings = true; updateCredentialLock();
+    try {
+      const result = await api('/api/config/validate', 'POST', payload);
+      state.configDraft = result.config;
+      writeConfigForm();
+      $('config-source').value = result.source;
+      if (format) state.configDirty = true;
+      setConfigMode(mode);
+      if (format) message('settings-success', '校验通过，源码已格式化；尚未写入文件。', 'positive');
+    } catch (error) {
+      if (!isCancelled(error) && state.authenticated) message('settings-error', error.message);
+    } finally { state.savingSettings = false; updateCredentialLock(); }
+  }
+
+  function confirmConfigDiscard() {
+    return !state.configDirty || window.confirm('有未保存的配置修改，确认丢弃吗？');
   }
 
   async function saveSettings(event) {
     event.preventDefault();
-    if ($('settings-fields').disabled || state.savingSettings) return;
-    const credential = $('credential').value.trim();
-    if (!credential) { message('settings-error', '请填写新凭据。'); return; }
-    const credentialType = $('credential-type').value;
-    if (!Object.hasOwn(credentialNames, credentialType)) { message('settings-error', '请选择有效的凭据类型。'); return; }
+    if (state.savingSettings || !state.settingsReady || state.configLoading) return;
+    if (state.configMode === 'form' && !$('settings-form').reportValidity()) return;
+    const payload = { revision: state.configSnapshot.revision };
+    payload.source = $('config-source').value;
+    if (state.configMode === 'form') payload.fields = collectConfigForm();
     state.savingSettings = true; updateCredentialLock();
-    $('credential').value = '';
-    $('settings-save').textContent = '正在更新…';
+    $('settings-save').textContent = '正在保存…';
     message('settings-error', ''); message('settings-success', '');
     try {
-      await api('/api/settings', 'PUT', { credential_type: credentialType, credential });
-      if (state.authenticated) {
-        message('settings-success', '凭据已更新，输入已清空。原用户配置保持不变。');
-        await Promise.all([loadSettings(), loadAccount(), loadCountries()]);
-      }
+      const result = await api('/api/config', 'PUT', payload);
+      acceptConfiguration(result);
+      message('settings-success', '已保存到 config.json。配置在重启后生效，当前连接未中断。', 'positive');
     } catch (error) {
-      if (!isCancelled(error) && state.authenticated) message('settings-error', error.message.split(credential).join('[已隐藏]'));
+      if (!isCancelled(error) && state.authenticated) message('settings-error', error.message);
     } finally {
-      state.savingSettings = false; updateCredentialLock(); $('settings-save').textContent = '更新凭据';
+      state.savingSettings = false; updateCredentialLock(); $('settings-save').textContent = '保存配置';
     }
   }
 
@@ -724,8 +831,13 @@
   }
 
   function showView(view) {
-    const title = { gateways: '网关总览', countries: '国家与地区', events: '事件日志', settings: '连接设置' }[view];
+    const title = { gateways: '网关总览', countries: '国家与地区', events: '事件日志', settings: '配置面板' }[view];
     if (!title) return;
+    if (state.view === 'settings' && view !== 'settings') {
+      if (state.savingSettings) { toast('正在处理配置，请稍候。'); return; }
+      if (!confirmConfigDiscard()) return;
+      if (state.configDirty) acceptConfiguration(state.configSnapshot);
+    }
     state.view = view;
     document.querySelectorAll('.view').forEach((element) => { element.hidden = element.id !== `view-${view}`; });
     document.querySelectorAll('.nav-item').forEach((button) => {
@@ -756,11 +868,62 @@
   }
 
   async function logout() {
-    if ($('logout').disabled) return;
+    if ($('logout').disabled || state.savingSettings || !confirmConfigDiscard()) return;
     $('logout').disabled = true;
     try { await api('/api/logout', 'POST', {}); endSession(); }
     catch (error) { if (!isCancelled(error) && state.authenticated) toast(`退出未完成：${error.message}`); }
     finally { $('logout').disabled = false; }
+  }
+
+  function openCleanDialog() {
+    if ($('clean-status')) $('clean-status').hidden = true;
+    $('clean-confirm-dialog').showModal();
+  }
+
+  async function performCleanProxies() {
+    const confirmBtn = $('clean-confirm-btn');
+    const cancelBtn = $('clean-cancel');
+    const quickBtn = $('btn-quick-clean-proxies');
+    const settingsBtn = $('btn-settings-clean-proxies');
+
+    if (confirmBtn) {
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = '正在深度清理…';
+    }
+    if (cancelBtn) cancelBtn.disabled = true;
+    if (quickBtn) quickBtn.disabled = true;
+    if (settingsBtn) settingsBtn.disabled = true;
+
+    try {
+      const res = await api('/api/proxies/clean', 'POST', {});
+      $('clean-confirm-dialog').close();
+      const count = res.proxies_removed ?? 0;
+      const resetText = res.clients_reset ? '客户端连接已重置' : '未变动';
+      toast(`深度清理完成！已移除 ${count} 个代理实例，${resetText}`);
+      if ($('clean-status')) {
+        $('clean-status').hidden = false;
+        $('clean-status').className = 'notice positive';
+        $('clean-status').textContent = `清理成功！已从 https://ur.io 网页端删除 ${count} 个代理实例，客户端会话计数重置: ${resetText}。刷新网页 Proxies 列表已清空。`;
+      }
+      loadAccount().catch(() => {});
+      loadGateways().catch(() => {});
+    } catch (err) {
+      const msg = err.message || '清理异常';
+      toast(`清理失败: ${msg}`);
+      if ($('clean-status')) {
+        $('clean-status').hidden = false;
+        $('clean-status').className = 'notice error';
+        $('clean-status').textContent = `清理异常: ${msg}`;
+      }
+    } finally {
+      if (confirmBtn) {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = '确认清空并重置';
+      }
+      if (cancelBtn) cancelBtn.disabled = false;
+      if (quickBtn) quickBtn.disabled = false;
+      if (settingsBtn) settingsBtn.disabled = false;
+    }
   }
 
   function bindEvents() {
@@ -778,10 +941,29 @@
     $('gateway-search').addEventListener('input', renderGateways);
     $('gateway-filter').addEventListener('change', renderGateways);
     $('country-search').addEventListener('input', renderCountries);
+    $('country-sort')?.addEventListener('change', renderCountries);
+    $('gateway-country-sort')?.addEventListener('change', () => renderCountryOptions());
+    $('btn-quick-clean-proxies')?.addEventListener('click', openCleanDialog);
+    $('btn-settings-clean-proxies')?.addEventListener('click', openCleanDialog);
+    $('clean-cancel')?.addEventListener('click', () => $('clean-confirm-dialog').close());
+    $('clean-confirm-btn')?.addEventListener('click', performCleanProxies);
     $('refresh-gateways').addEventListener('click', loadGateways);
     $('refresh-account').addEventListener('click', loadAccount);
     $('refresh-events').addEventListener('click', loadEvents);
-    $('refresh-settings').addEventListener('click', loadSettings);
+    $('refresh-settings').addEventListener('click', () => { if (confirmConfigDiscard()) loadSettings(true); });
+    $('config-discard').addEventListener('click', () => { if (state.configSnapshot && confirmConfigDiscard()) { acceptConfiguration(state.configSnapshot); message('settings-error', ''); message('settings-success', ''); } });
+    $('config-tab-form').addEventListener('click', () => switchConfigMode('form'));
+    $('config-tab-source').addEventListener('click', () => switchConfigMode('source'));
+    $('config-format').addEventListener('click', () => switchConfigMode('source', true));
+    $('settings-fields').addEventListener('input', markConfigDirty);
+    $('settings-fields').addEventListener('change', markConfigDirty);
+    document.querySelector('.config-tabs').addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const mode = event.key === 'Home' ? 'form' : event.key === 'End' ? 'source' : state.configMode === 'form' ? 'source' : 'form';
+      switchConfigMode(mode).then(() => $(`config-tab-${state.configMode}`).focus());
+    });
+    window.addEventListener('beforeunload', (event) => { if (state.configDirty || state.savingSettings) { event.preventDefault(); event.returnValue = ''; } });
     $('refresh-countries').addEventListener('click', () => loadSection('countries', 'refresh-countries', 'countries-error', async () => {
       await api('/api/countries/refresh', 'POST', {});
       acceptCountries(await api('/api/countries')); toast('位置快照已刷新');

@@ -7,9 +7,10 @@
 | 数据面 | `core/multiplexer.py`、`core/protocol.py` | asyncio 单 TCP 端口识别 HTTP / SOCKS5；鉴权、完整握手、背压、半关闭 |
 | 健康检查 | `core/checker.py` | HTTP CONNECT / SOCKS5 CONNECT → TLS 校验证书 → 出口 IP；两个探针交叉确认 |
 | 生命周期 | `core/gateway.py` | 配置、每网关操作锁、候选验证、原子换线、所有权登记、延迟清理、恢复和退避 |
-| 本地管理 | `core/web_server.py` | 事件循环桥接、回环 REST API、管理会话、CSRF、凭据更新、静态资源 |
-| 持久化 | `core/storage.py` | 原子替换、单进程 OS 文件锁；覆盖凭据与用户 config.json 分离 |
-| 前端 | `web/` | 无 CDN 中文管理页；轮询、搜索、CRUD、地址复制、日志 |
+| 本地管理 | `core/web_server.py` | 事件循环桥接、回环 REST API、管理会话、CSRF、配置面板 API、静态资源 |
+| 配置编辑 | `core/config.py`、`core/config_editor.py` | 字符串感知 JSONC 解析、字段校验、版本冲突检查、认证字段遮罩、旧凭据迁移 |
+| 持久化 | `core/storage.py` | 原子替换、单进程 OS 文件锁；Web 面板与 CLI 共用 config.json |
+| 前端 | `web/` | 无 CDN 中文管理页；轮询、搜索、CRUD、日志、配置表单与源码双模式 |
 | 启动 | `main.py`、`start_web.bat` | 保留原 CLI；新增 Web 模式 |
 
 ## 数据流与不变量
@@ -21,6 +22,10 @@
 管理器使用单个 asyncio 循环；阻塞的官方请求在线程执行。URClient 的认证和请求由 RLock 保护；更新凭据时禁止并发网关操作。
 管理 API 对同一网关的 PUT 串行执行读取、合并、国家校验和提交；不同网关独立。高级本地代理密码仅驻留内存，保存鉴权需求标记，重启时在凭据补齐前禁止监听，不自动降级免密。
 同一数据目录通过 OS 文件锁排除第二个实例；真实 bind 检测端口冲突。
+
+`GET/PUT /api/config` 读写固定的 config.json；`POST /api/config/validate` 校验 JSONC 草稿，不写盘。均复用管理会话与 CSRF 保护。已有六类认证字段以保留占位符返回，响应与错误不回显旧凭据。编辑器以配置文件及旧凭据文件的摘要检测过期版本，写入前再次检查；原子写盘失败时保留原配置。
+
+配置面板保存不热更新运行中客户端、不自动重启；显示磁盘配置与当前监听端口。认证/API 地址变化须先回收网关；保存后在重启前阻止新增旧账号网关。旧版 credentials.json 仅用于兼容，保存时迁入 config.json 并改名保留备份。表单与源码共享内存草稿，保留未知扩展字段，保存统一输出格式化 JSON；不保留源码注释/排版。
 状态仅保存配置和本工具创建的 client_id。远端 token 只在内存中，重启先清理登记的旧资源再恢复 enabled 网关。
 清理失败保留登记并退避，不调用全账号清空接口；创建请求超时不自动重放。
 

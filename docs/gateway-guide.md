@@ -4,13 +4,34 @@
 
 ```powershell
 python main.py --web --open-browser
-# 自定义管理界面端口，不是代理端口
-python main.py --web --web-port 8890 --open-browser
+# Web 管理控制台默认端口为 8777 (可在 config.json 中配置 web_port，也可命令行指定)
+python main.py --web --web-port 8777 --open-browser
 ```
 
 Windows 双击 `start_web.bat`。原 `start.bat` / `python main.py` 仍进入终端模式。
 运行依赖仍为 Python 3.10+ 标准库；Playwright 仅为可选开发测试依赖。
 启动终端显示含管理令牌的链接，请勿分享；浏览器读取后从地址栏移除令牌，以 HttpOnly Cookie 访问管理 API。
+
+## 配置面板
+
+左侧 **配置面板** 直接对应项目 `config.json`，与命令行共用：
+
+1. **可视化编辑**：修改认证、服务地址、请求超时、默认出口策略和管理端口。
+2. **源码编辑**：支持 JSONC 注释和尾逗号，可编辑扩展字段；切回表单会校验源码。格式化只修改草稿。
+3. **保存配置**：校验后原子写入 `config.json`。输出为格式化 JSON，不保留注释/排版；扩展字段保留。
+4. **重启生效**：关闭原启动窗口，再运行 `start_web.bat`；服务不会自动重启或中断连接。`--web-port` 仍优先于文件值。
+
+认证字段的 `__KEEP_EXISTING__` 代表保留磁盘原值，不是实际凭据。输入新值替换，显式清空删除；省略已有认证字段会报错，避免误删。原有秘密值不回传浏览器，草稿不写入浏览器存储。
+
+变更账号或 API 地址前请先删除网关并等待资源回收；这类修改保存后，重启之前暂停新建网关，避免旧账号资源遗留。一般参数可在有网关时保存。配置面板不调用云端登录来验证凭据，授权码保存时不兑换，请在有效期内重启使用。
+
+检测到旧 `.local/credentials.json` 时显示迁移提示；保存会将有效凭据迁入 `config.json`，原文件在 `.local/credentials.migrated-*.json` 留备份。该备份也含秘密，请勿分享。
+
+其他窗口/编辑器修改文件后，再保存旧草稿会提示版本冲突，不覆盖新文件。先自行保留所需改动，再点“重新读取文件”。刷新、切换页面、退出登录会提示未保存修改。
+
+![配置面板](assets/config-panel.png)
+
+![源码编辑](assets/config-panel-source.png)
 
 ## 创建与绑定
 
@@ -57,9 +78,9 @@ curl.exe --noproxy "" --socks5-hostname 127.0.0.1:10801 https://api.ipify.org
 
 | 路径 | 内容 |
 |---|---|
-| `config.json` | 原有账号/CLI 配置，本次升级不改内容 |
+| `config.json` | 配置面板和 CLI 共用配置，保存后重启服务生效 |
 | `.local/gateways.json` | 网关配置、enabled 状态、拥有的远端 client_id |
-| `.local/credentials.json` | 界面保存的本地覆盖凭据，不回传浏览器 |
+| `.local/credentials.json` | 旧版覆盖凭据；面板保存时迁入 config.json 并改名留备份 |
 | `.local/manager.lock` | OS 单实例锁；退出释放，残留文件不表示仍被锁定 |
 
 覆盖凭据文件是本地敏感文件，不是加密保险箱；Windows 使用当前用户私有目录与系统 ACL，POSIX 凭据文件以 0600 创建。
@@ -80,4 +101,5 @@ python -m compileall -q core main.py
 
 默认测试仅本地 TCP 和内存 API，不连接真实账号或消耗远端配额。
 可选界面回归：`python -m tests.browser_smoke`（开发环境需安装 Playwright 浏览器）。
+配置面板回归：`python -m tests.browser_config`（真实浏览器 + 临时 config.json；不访问真实账号）。
 详见 `docs/architecture.md` 和 `docs/design.md`。
