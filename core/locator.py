@@ -1,89 +1,81 @@
-#!/usr/bin/env python3
-"""
-URnetwork 地理信息与节点检索模块
-从 https://ur.io 及官方 API 实时获取全球国家、地区与住宅节点分布
-"""
-
-import urllib.request
+"""Official provider locations, with explicit provenance and stale-cache semantics."""
 import json
-import re
+import threading
+import time
+import urllib.request
+from datetime import datetime, timezone
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-}
+SOURCE = '/network/provider-locations'
 
-def fetch_live_countries(ur_base="https://ur.io", api_base="https://api.bringyour.com", timeout=15):
-    """
-    实时从 https://ur.io/location 与 API 提取支持的国家列表及在线节点数
-    """
-    # 1. 抓取 ur.io/location 提取国家编码与全称
-    countries_meta = {}
-    try:
-        req_html = urllib.request.Request(f"{ur_base}/location", headers=HEADERS)
-        with urllib.request.urlopen(req_html, timeout=timeout) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-            matches = re.findall(
-                r'href=[\'"]/location/([a-z]{2})[\'"][\s\S]*?class=[\'"]location-hub-name[\'"][^>]*>([^<]+)</span>',
-                html
-            )
-            for code, name in matches:
-                countries_meta[code.upper()] = name.strip()
-    except Exception as e:
-        # 网络异常时容错降级
-        pass
 
-    # 2. 抓取 stats/providers-map 提取精确在线 Provider 数量与区域
-    providers_map = {}
-    try:
-        req_map = urllib.request.Request(f"{api_base}/stats/providers-map", headers=HEADERS)
-        with urllib.request.urlopen(req_map, timeout=timeout) as resp:
-            providers_map = json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        pass
+def _request(path, *, api_base, timeout, client=None, body=None):
+    if client is not None:
+        return client._request(path, method='GET' if body is None else 'POST', body=body)
+    req = urllib.request.Request(api_base.rstrip('/') + path,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={'Content-Type': 'application/json', 'User-Agent': 'URnetwork-Proxy/2.0'})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=timeout) as response:
+        result = json.load(response)
+    if not isinstance(result, dict) or result.get('error'):
+        raise ValueError('Invalid provider locations response')
+    return result
 
-    merged_countries = []
-    # 优先使用实时统计的节点表
-    for code_lower, regions in providers_map.items():
-        code_upper = code_lower.upper()
-        name = countries_meta.get(code_upper, code_upper)
-        total_providers = sum(r.get("provider_count", 0) for r in regions.values())
-        merged_countries.append({
-            "code": code_upper,
-            "name": name,
-            "providers": total_providers,
-            "regions_count": len(regions)
-        })
 
-    # 若网页有而统计未包含（极少数边缘国家），做兜底补齐
-    known_codes = {c["code"] for c in merged_countries}
-    for code_upper, name in countries_meta.items():
-        if code_upper not in known_codes:
-            merged_countries.append({
-                "code": code_upper,
-                "name": name,
-                "providers": 0,
-                "regions_count": 0
-            })
+def fetch_live_countries(ur_base='https://ur.io', api_base='https://api.bringyour.com', timeout=15, client=None):
+    """Return all country locations, never blend public-map counts into this snapshot."""
+    result = _request(SOURCE, api_base=api_base, timeout=timeout, client=client)
+    locations = result.get('locations')
+    if not isinstance(locations, list):
+        raise ValueError('Missing locations in provider response')
+    countries = {}
+    for loc in locations:
+        if loc.get('location_type') != 'country':
+            continue
+        code = str(loc.get('country_code', '')).upper()
+        if len(code) != 2 or not code.isascii() or not code.isalpha() or not loc.get('location_id'):
+            continue
+        count = loc.get('provider_count', 0)
+        if not isinstance(count, int) or count < 0:
+            raise ValueError('Invalid provider count')
+        countries[code] = dict(code=code, name=loc.get('name') or loc.get('country') or code,
+            providers=count, location_id=loc['location_id'],
+            stable=bool(loc.get('stable')), strong_privacy=bool(loc.get('strong_privacy')))
+    return sorted(countries.values(), key=lambda c: (-c['providers'], c['code']))
 
-    # 按照节点数降序排列
-    merged_countries.sort(key=lambda x: x["providers"], reverse=True)
-    return merged_countries
 
-def search_cities(query, api_base="https://api.bringyour.com", timeout=15):
-    """
-    调用 /network/find-provider-locations 搜索具体城市与节点 ID
-    """
-    url = f"{api_base}/network/find-provider-locations"
-    data = json.dumps({"query": query}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json", **HEADERS}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            res = json.loads(resp.read().decode("utf-8"))
-            return res.get("locations", [])
-    except Exception as e:
-        print(f"[!] 搜索城市失败: {e}")
-        return []
+def search_cities(query, api_base='https://api.bringyour.com', timeout=15, client=None):
+    result = _request('/network/find-provider-locations', api_base=api_base, timeout=timeout,
+                      client=client, body={'query': query, 'max_distance_fraction': 1,
+                                          'enable_max_distance_fraction': True})
+    return [loc for loc in result.get('locations', []) if loc.get('location_type') == 'city']
+
+
+class CountryCatalog:
+    def __init__(self, client, ttl=60):
+        self.client, self.ttl = client, ttl
+        self._lock = threading.Lock()
+        self._countries, self._updated_at, self._time = [], None, 0
+        self._error, self._last_attempt = None, 0
+
+    def get(self, refresh=False):
+        with self._lock:
+            now = time.monotonic()
+            expired = not self._time or now - self._time >= self.ttl
+            if refresh or (expired and now - self._last_attempt >= 5):
+                self._last_attempt = now
+                try:
+                    self._countries = fetch_live_countries(client=self.client)
+                    self._updated_at = datetime.now(timezone.utc).isoformat()
+                    self._time = time.monotonic()
+                    self._error = None
+                except Exception as exc:
+                    self._error = f'位置数据刷新失败 ({type(exc).__name__})'
+            return dict(countries=[dict(c) for c in self._countries], source=SOURCE,
+                        updated_at=self._updated_at, stale=bool(self._error) or not self._time or time.monotonic()-self._time >= self.ttl,
+                        error=self._error)
+
+    def invalidate(self):
+        with self._lock:
+            self._countries, self._updated_at, self._time = [], None, 0
+            self._error, self._last_attempt = None, 0

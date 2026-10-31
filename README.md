@@ -46,6 +46,26 @@
 
 ---
 
+## 🖥️ 多本地网关与 Web 管理（新增）
+
+双击 **`start_web.bat`**，或执行：
+
+```powershell
+python main.py --web --open-browser
+```
+
+- **每个网关一个自定义端口**，同时支持 HTTP、HTTPS 目标 CONNECT、SOCKS5 CONNECT。
+- **多个网关分别绑定国家**；定时检测、连续失败防抖、候选验证后换线，本地地址不变。
+- 国家目录改用官方 `provider-locations`，**全量展示、不限制 20/25 条**；显示来源、时间和过期状态。
+- 中文控制台管理网关、国家、配额和事件；纯本地静态资源，无 CDN/npm/pip 运行依赖。
+- 保留原 CLI 和账号配置；网关状态位于 `.local/`，仅本机回环监听。
+- 换线恢复新连接，断开的既有会话需客户端重试；重新分配不保证获得不同 IP。
+
+详见 [多网关使用说明](docs/gateway-guide.md)、[当前架构](docs/architecture.md)。
+下方原 CLI 章节保留；国家数以实时接口返回为准，非固定数量。
+
+---
+
 ## 💡 核心特性
 
 - **⚡ 零外部依赖 (Zero External Dependencies)**

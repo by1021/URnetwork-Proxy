@@ -1,0 +1,111 @@
+{
+  "files": [
+    {
+      "path": "main.py",
+      "sha256": "96faf749cca89dccd88a3146fb924eafee90832cdb382628e97cc00125911c7c"
+    },
+    {
+      "path": "start_web.bat",
+      "sha256": "9f81516d3b3db39a5e262d75153d939eec63d71067a13aa1f6c507cb503a1f2b"
+    },
+    {
+      "path": "core/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "core/checker.py",
+      "sha256": "00b2c99332d23b18d813a48a816afee20590d2b30856fd848f0aae3282680cb2"
+    },
+    {
+      "path": "core/client.py",
+      "sha256": "6a3dc705d44d03c72a918845f22523b5e38830414db1398f7bacea077a8e91db"
+    },
+    {
+      "path": "core/config.py",
+      "sha256": "6c1c6e355cd02c3c1dbd15281c244f38c63475a32f6b3577d65abe65aab3ac26"
+    },
+    {
+      "path": "core/gateway.py",
+      "sha256": "dfd8d6c5f3d160f1a3c1ceb40b60c7567430b9e0efdc7d7ae2b228b48d37ff89"
+    },
+    {
+      "path": "core/locator.py",
+      "sha256": "2f21ac1c84ce8a98ebb56219485d79154599bae67cfdb5a8d09ab2caf856b159"
+    },
+    {
+      "path": "core/multiplexer.py",
+      "sha256": "0acb046e6bf101d0c8631b3cccdf0032e44032c326105acfb4dd0b42b2ad248b"
+    },
+    {
+      "path": "core/protocol.py",
+      "sha256": "d8bd010a4071429a91645a2df299a374fb6c988007cb478a6042a3a86d2dd1ec"
+    },
+    {
+      "path": "core/storage.py",
+      "sha256": "3b3c5aa7d707927ee9f1f07ab157a48c462ee6f99bba31cb19d32e340ac76a65"
+    },
+    {
+      "path": "core/web_server.py",
+      "sha256": "1c81ef424aa4bf9aa89a25b7f0f9b294fe70649f57b7b5350980c43ade01a781"
+    },
+    {
+      "path": "tests/__init__.py",
+      "sha256": "c74e8c65109c0e204d1f67dcce8425b9f9d4af08043ea8b5f913a51d694057a9"
+    },
+    {
+      "path": "tests/browser_smoke.py",
+      "sha256": "80ce316b4ff3771766653fda167b143b37fac9cc235acb63d6ef706fa0d10ef6"
+    },
+    {
+      "path": "tests/fixtures.py",
+      "sha256": "114658317c13a570f5e7386dd42c9109812fbe7f88119899d74893d5f46e2b7f"
+    },
+    {
+      "path": "tests/test_client.py",
+      "sha256": "0927f8abe43622538d02a90fe72705ff95fef7c3639da5bab8dcc0da96b86c8f"
+    },
+    {
+      "path": "tests/test_gateway.py",
+      "sha256": "429041ca2a9907b8c227881791fdfe9e1ecd7139ec520e9dfc375eaab79113c1"
+    },
+    {
+      "path": "tests/test_integration.py",
+      "sha256": "9cce3e3aad75a7a0f4730106cfca371f7633f1bc6a081a0142259263851ff969"
+    },
+    {
+      "path": "tests/test_locations.py",
+      "sha256": "2a7a521219fdabb3dc98e10f5a0ed662190ba37d16734c7f6b446d20aab9ab36"
+    },
+    {
+      "path": "tests/test_protocols.py",
+      "sha256": "ec77c4eea2c8f87ba60a5348f9e4e9b98429aca7e3d55196c41dc4a9c1ed35fe"
+    },
+    {
+      "path": "tests/test_storage.py",
+      "sha256": "afa3ce29f7b41cfbf875028dffb471a133c50bdfe4e66db6be64045894ec611c"
+    },
+    {
+      "path": "tests/test_web.py",
+      "sha256": "3b1ebc1822ef520ec950b73581191d71e7b3b7628529b35e8c48e0dfb9dd623c"
+    },
+    {
+      "path": "web/app.js",
+      "sha256": "18caf3c5ccf085d2dca37e7bbae94592bca1ee37b68ca1987d2a1f834fcf5417"
+    },
+    {
+      "path": "web/index.html",
+      "sha256": "17efe929a20ca05494c0560cb8362a9a4926eb11cbc90480b7d41a267952ba37"
+    },
+    {
+      "path": "web/style.css",
+      "sha256": "10ef37fae39f7d334ce088d4ac239a485e1e6a8a89dbfdd46b5a98c8b61e3c35"
+    }
+  ],
+  "tests": {
+    "unittest": 76,
+    "result": "PASS",
+    "browser": "PASS",
+    "compile": "PASS"
+  },
+  "config_unchanged": true
+}

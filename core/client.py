@@ -9,7 +9,17 @@ import urllib.request
 import json
 import base64
 import time
+import threading
+import urllib.error
 from .locator import search_cities
+
+class ApiError(RuntimeError):
+    """Sanitized control-plane failure; never reflect credentials/remote bodies."""
+    def __init__(self, status=0, kind="request"):
+        self.status = status
+        self.kind = kind
+        super().__init__(f"URnetwork API {kind} (HTTP {status})")
+
 
 class URClient:
     def __init__(
@@ -23,6 +33,8 @@ class URClient:
         api_base="https://api.bringyour.com",
         timeout=15
     ):
+        self._lock = threading.RLock()
+        self._resolving = False
         self.api_key = (api_key or "").strip()
         self.jwt_token = (jwt_token or "").strip()
         self.seedphrase = (seedphrase or "").strip()
@@ -37,21 +49,41 @@ class URClient:
         self.auth_method = "none"
 
     def _request(self, path, method="GET", body=None, auth=True):
-        url = f"{self.api_base}{path}"
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) URnetwork-Proxy-Client/1.1"
-        }
-        if auth:
-            if not self.jwt:
+        with self._lock:
+            if auth and not self.jwt:
                 self.login()
-            headers["Authorization"] = f"Bearer {self.jwt}"
-
-        data = json.dumps(body).encode("utf-8") if body is not None else None
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            content = resp.read().decode("utf-8")
-            return json.loads(content) if content else {}
+            for attempt in range(2):
+                headers = {"Content-Type": "application/json", "User-Agent": "URnetwork-Proxy/2.0"}
+                if auth:
+                    headers["Authorization"] = f"Bearer {self.jwt}"
+                data = json.dumps(body).encode() if body is not None else None
+                req = urllib.request.Request(self.api_base + path, data=data, headers=headers, method=method)
+                try:
+                    # Ignore OS proxy variables: a managed proxy may itself be offline.
+                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    with opener.open(req, timeout=self.timeout) as resp:
+                        content = resp.read(8 * 1024 * 1024 + 1)
+                    if len(content) > 8 * 1024 * 1024:
+                        raise ApiError(0, "response-too-large")
+                    result = json.loads(content) if content else {}
+                    if not isinstance(result, dict):
+                        raise ApiError(0, "invalid-response")
+                    if result.get("error"):
+                        raise ApiError(200, "rejected")
+                    return result
+                except urllib.error.HTTPError as exc:
+                    status = exc.code
+                    exc.close()
+                    renewable = not self.api_key and not self.jwt_token and bool(self.seedphrase or (self.email and self.password))
+                    if status == 401 and auth and not self._resolving:
+                        self.jwt = None
+                        # Replay only GET after explicit authentication rejection, never creation POSTs.
+                        if method == "GET" and attempt == 0 and renewable:
+                            self.login()
+                            continue
+                    raise ApiError(status, "authentication" if status in (401, 403) else "request") from None
+                except (OSError, ValueError) as exc:
+                    raise ApiError(0, type(exc).__name__) from None
 
     def _resolve_session_info(self):
         """解析 Token Payload 并向官方接口查询 network_user 详情"""
@@ -67,6 +99,7 @@ class URClient:
             pass
 
         # 通过 /network/user 获取网络详情
+        self._resolving = True
         try:
             u_info = self._request("/network/user", method="GET")
             nu = u_info.get("network_user", {})
@@ -83,8 +116,14 @@ class URClient:
                 "user_id": self.jwt_payload.get("user_id"),
                 "auth_types": []
             }
+        finally:
+            self._resolving = False
 
     def login(self):
+        with self._lock:
+            return self._login()
+
+    def _login(self):
         """
         统一认证登录接口，按优先级适配不同账号类型：
         1. 官方 API Key (urn_...) - 推荐，长期有效，不随浏览器会话过期
@@ -222,7 +261,9 @@ class URClient:
         try:
             res = self._request("/network/proxies", method="GET")
             clients = res.get("clients", [])
-        except Exception:
+        except ApiError as exc:
+            if exc.status != 404:
+                raise
             res = self._request("/network/clients", method="GET")
             clients = [c for c in res.get("clients", []) if c.get("proxy_client")]
 
@@ -287,7 +328,7 @@ class URClient:
             "clients_reset": clients_reset
         }
 
-    def create_proxy(self, mode="best", target="", protocol="socks"):
+    def create_proxy(self, mode="best", target="", protocol="socks", location_id=None):
         """
         分配代理节点
         mode: 'best' | 'country' | 'city'
@@ -310,16 +351,20 @@ class URClient:
             loc_label = "Best Available"
         elif mode == "country":
             country_code = (target or "US").strip().upper()
-            init_state = {"country_code": country_code}
+            if not location_id:
+                from .locator import fetch_live_countries
+                match = next((c for c in fetch_live_countries(client=self) if c["code"] == country_code), None)
+                if not match:
+                    raise ValueError(f"国家 {country_code} 当前未返回可用位置")
+                location_id = match["location_id"]
+            init_state = {"location": {"connect_location_id": {"location_id": location_id},
+                                      "country_code": country_code.lower(), "location_type": "country"}}
             target_desc = f"指定国家/地区 [{country_code}]"
             loc_label = country_code
         elif mode == "city":
-            cities = search_cities(target, api_base=self.api_base, timeout=self.timeout)
+            cities = search_cities(target, client=self)
             if not cities:
-                print(f"[!] 城市 [{target}] 未找到可用节点，自动降级为最佳连接。")
-                init_state = {"location": {"connect_location_id": {"best_available": True}}}
-                target_desc = "城市未命中降级 -> 全球最佳"
-                loc_label = "Best Available"
+                raise ValueError(f"城市 {target} 当前无可用位置；保留原绑定，不降级国家")
             else:
                 loc = cities[0]
                 target_desc = f"指定城市 [{loc.get('name')}, {loc.get('country')}] (节点数: {loc.get('provider_count')})"
@@ -371,6 +416,8 @@ class URClient:
 
         return {
             "mode": mode,
+            "location_id": location_id,
+            "country_code": target.upper() if mode == "country" else "",
             "target_desc": target_desc,
             "client_id": res.get("client_id"),
             "description": description,

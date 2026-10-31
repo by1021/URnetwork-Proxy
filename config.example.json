@@ -13,7 +13,7 @@
   // 获取方式: 登录 https://ur.io -> 网页端设置/API -> 创建 API Key (以 urn_ 开头)
   // 或者运行 python main.py --auth-code <网页5分钟授权码> 自动换取并回写
   // 特点: 长期有效、稳定不随浏览器会话过期、支持代理生命周期管理与云端同步
-  "api_key": "urn_your_api_key_here",
+  "api_key": "",
 
   // [备选方案 1] 浏览器会话 Token (byJwt)
   // 获取方式: 登录 https://ur.io -> 浏览器 F12 开发者工具 -> Application -> Cookies/LocalStorage
@@ -23,7 +23,7 @@
   // [备选方案 2] 经典 24 位 BIP-39 英文助记词 (单词间以单个空格分隔)
   // 获取方式: 注册 URnetwork 时备份的助记词，或通过 python main.py --generate-seedphrase 生成
   // 注意: Google 快捷登录注册的用户可能无默认助记词，建议优先使用 api_key 或通过菜单 [8] 生成
-  "seedphrase": "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23 word24",
+  "seedphrase": "",
 
   // [备选方案 3] 邮箱与独立密码登录
   // 适用场景: 在 URnetwork 官方平台通过邮箱与独立密码注册的用户

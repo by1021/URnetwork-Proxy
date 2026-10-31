@@ -271,7 +271,7 @@ def interactive_mode(client, config):
         elif choice == "3":
             print("\n[*] 正在从 https://ur.io 拉取最新在线国家与节点分布...")
             try:
-                countries = fetch_live_countries(ur_base=config.get("ur_base_url", "https://ur.io"))
+                countries = fetch_live_countries(client=client, api_base=config.get("api_base_url", "https://api.bringyour.com"))
             except Exception as e:
                 print(f"[!] 拉取失败: {e}")
                 if safe_input("按回车键继续...") is None:
@@ -279,15 +279,15 @@ def interactive_mode(client, config):
                 continue
 
             print(f"\n成功获取 {len(countries)} 个国家/地区：")
-            for idx, c in enumerate(countries[:20], 1):
+            for idx, c in enumerate(countries, 1):
                 print(f" [{idx:2d}] [{c['code']}] {c['name']:<22} (在线节点: {c['providers']})")
 
-            c_pick = safe_input(f"\n请选择国家序号 [1-20] 或直接输入国家代码: ")
+            c_pick = safe_input(f"\n请选择国家序号 [1-{len(countries)}] 或直接输入国家代码: ")
             if c_pick is None:
                 break
             c_pick = c_pick.strip().upper()
             target_country = "US"
-            if c_pick.isdigit() and 1 <= int(c_pick) <= min(20, len(countries)):
+            if c_pick.isdigit() and 1 <= int(c_pick) <= len(countries):
                 target_country = countries[int(c_pick) - 1]["code"]
             elif len(c_pick) == 2 and c_pick.isalpha():
                 target_country = c_pick
@@ -312,7 +312,7 @@ def interactive_mode(client, config):
             print(f"[*] 正在检索 [{city_query}] 在线住宅节点...")
             cities = search_cities(
                 city_query,
-                api_base=config.get("api_base_url", "https://api.bringyour.com")
+                api_base=config.get("api_base_url", "https://api.bringyour.com"), client=client
             )
             if not cities:
                 print(f"[!] 未找到包含活跃节点的城市: {city_query}")
@@ -478,9 +478,17 @@ def main():
     parser.add_argument("--status", action="store_true", help="查看账户配额状态")
     parser.add_argument("--list-proxies", action="store_true", help="查看当前网页端 Proxies 列表")
     parser.add_argument("--clean", action="store_true", help="清理所有网页端代理与历史客户端连接")
+    parser.add_argument("--web", action="store_true", help="启动本地多网关 Web 管理界面")
+    parser.add_argument("--web-port", type=int, default=8888, help="管理界面端口，默认 8888")
+    parser.add_argument("--state-dir", help="网关状态目录，默认项目 .local")
+    parser.add_argument("--open-browser", action="store_true", help="启动后打开管理界面")
     args = parser.parse_args()
 
     config = load_config()
+    if args.web:
+        from core.web_server import serve
+        serve(config, port=args.web_port, state_dir=args.state_dir, open_browser=args.open_browser)
+        return
 
     api_key = args.api_key or config.get("api_key", "").strip()
     jwt_token = args.jwt or config.get("jwt_token", "").strip()
@@ -559,8 +567,8 @@ def main():
 
     if args.list_countries:
         print("[*] 正在从 https://ur.io 获取最新国家节点...")
-        countries = fetch_live_countries(ur_base=config.get("ur_base_url", "https://ur.io"))
-        for c in countries[:25]:
+        countries = fetch_live_countries(client=client, api_base=config.get("api_base_url", "https://api.bringyour.com"))
+        for c in countries:
             print(f"[{c['code']}] {c['name']:<25} 节点数: {c['providers']}")
         return
 
