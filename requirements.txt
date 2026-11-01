@@ -1,2 +1,4 @@
 # URnetwork-Proxy 运行基于 Python 3.10+ 标准库
 # 无需额外安装第三方依赖包即可开箱即用。
+# HTTPS 网关需提供 PEM 证书/私钥，或由系统 OpenSSL 生成。
+# 无 OpenSSL 时可选安装 cryptography 用于生成自签名证书。

@@ -26,7 +26,9 @@ DEFAULT_CONFIG = {
     "web_port": 8777,
     "web_username": "admin",
     "web_password": "admin",
-    "allowed_hosts": []
+    "allowed_hosts": [],
+    "tls_cert_file": "",
+    "tls_key_file": ""
 }
 
 CREDENTIAL_FIELDS = ("api_key", "jwt_token", "seedphrase", "auth_code", "email", "password")
@@ -106,6 +108,14 @@ def validate_config(cfg):
         if not isinstance(allowed_hosts, list) or not all(isinstance(h, str) for h in allowed_hosts):
             raise ConfigError("allowed_hosts 须为字符串数组")
     result["allowed_hosts"] = allowed_hosts
+
+    for key in ("tls_cert_file", "tls_key_file"):
+        val = result.get(key, "")
+        if not isinstance(val, str) or len(val) > 1024:
+            raise ConfigError(f"{key} 须为不超过 1024 字符的路径文本")
+        result[key] = val
+    if bool(result["tls_cert_file"]) != bool(result["tls_key_file"]):
+        raise ConfigError("tls_cert_file 与 tls_key_file 须同时填写或同时留空")
 
     for key, minimum, maximum in (("timeout_seconds", 1, 300), ("web_port", 1, 65535)):
         if type(result[key]) is not int or not minimum <= result[key] <= maximum:

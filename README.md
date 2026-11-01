@@ -17,7 +17,7 @@
 
 <p align="center">
   <b>URnetwork-Proxy</b> 是一款面向 <a href="https://ur.io">URnetwork (ur.io)</a> 去中心化住宅代理网络的专业级 Python 管理套件。<br/>
-  集成<b>单端口 HTTP/SOCKS5 混合协议复用</b>、<b>多本地网关生命周期管理与故障自愈</b>、<b>全球 90+ 国家实时拓扑感知</b>、<b>现代化 Web 控制台与双模式配置中心</b>，全流程实现开箱即用、零第三方外部依赖。
+  集成<b>单端口 HTTP/HTTPS/SOCKS5 混合协议复用</b>、<b>多本地网关生命周期管理与故障自愈</b>、<b>全球 90+ 国家实时拓扑感知</b>、<b>现代化 Web 控制台与双模式配置中心</b>，运行核心使用 Python 标准库，HTTPS 网关需提供证书或通过 OpenSSL 生成。
 </p>
 
 </div>
@@ -59,10 +59,10 @@
 ## 💡 核心特性
 
 - **⚡ 零外部依赖 (Zero External Dependencies)**
-  - 基于 Python 3.10+ 标准库（`asyncio`、`urllib`、`socket`、`http.server`、`json`、`argparse`）纯手工构建；无需 `pip install` 安装第三方包，克隆即可秒级启动。
+  - 基于 Python 3.10+ 标准库（`asyncio`、`urllib`、`socket`、`http.server`、`json`、`argparse`）纯手工构建；核心无需 pip 依赖；HTTPS 证书生成需要系统 OpenSSL 或可选的 cryptography。
   - 前端控制台采用纯原生 HTML5/ES6/CSS3 构建，无 Node.js、npm 或外部 CDN 网络依赖，完全离线可靠运行。
 - **🔀 单端口协议全复用 (Single-Port Mixed Multiplexing)**
-  - 独创单端口透明协议嗅探机制：首字节自动识别 SOCKS5（`0x05`）与 HTTP / HTTPS CONNECT（ASCII 方法字符），**同一本地端口同时处理 HTTP 代理请求与 SOCKS5 代理连接**，无需为不同协议开放多组端口。
+  - 独创单端口透明协议嗅探机制：首字节自动识别 SOCKS5（`0x05`）、明文 HTTP（ASCII 字符）与 HTTPS 代理 TLS 握手（`0x16`），**同一本地端口同时处理 HTTPS 加密代理、HTTP 明文代理与 SOCKS5 代理连接**，无需为不同协议开放多组端口。
 - **🛡️ 多本地网关与智能自愈 (Multi-Gateway Engine & Auto-Healing)**
   - 支持创建多个相互独立的本地监听网关（如 `10801` 绑定日本、`10802` 绑定美国），客户端只需连接固定本地端口。
   - **故障自愈与平滑无缝换线**：后台定时多点探针检测，触发失败阈值后自动在云端申请并严格预检新候选链路；验证成功后平滑原子切换，老连接享受 30 秒排空保护，杜绝长连接突发雪崩。
@@ -94,8 +94,8 @@ flowchart TD
     end
 
     subgraph GatewayLayer [本地多网关与协议复用层 (core/multiplexer.py)]
-        G1[本地监听端口 10801<br/>HTTP / SOCKS5 混合]
-        G2[本地监听端口 10802<br/>HTTP / SOCKS5 混合]
+        G1[本地监听端口 10801<br/>HTTP / HTTPS / SOCKS5 混合]
+        G2[本地监听端口 10802<br/>HTTP / HTTPS / SOCKS5 混合]
         MUX{协议嗅探器<br/>First-Byte Sniffer}
         MUX -->|0x05| SOCKS[SOCKS5 CONNECT 处理器]
         MUX -->|ASCII| HTTP[HTTP / HTTPS CONNECT 处理器]
@@ -164,7 +164,7 @@ cp config.example.json config.json
 vim config.json  # 或使用 nano、VS Code 打开编辑
 ```
 
-> **环境检查：** 确保本机安装有 Python 3.10 或更高版本（`python3 --version`）。**无需安装任何 pip 依赖包！**
+> **环境检查：** Python 3.10+；HTTPS 网关需提供 PEM 证书/私钥，或使用系统 OpenSSL 首次生成（无 OpenSSL 时可选安装 cryptography）。证书配置和客户端信任方法见 [网关使用指南](docs/gateway-guide.md)。
 
 ---
 
@@ -180,11 +180,11 @@ vim config.json  # 或使用 nano、VS Code 打开编辑
   ```text
   管理访问地址：http://127.0.0.1:8777/
   登录方式：用户名 / 密码
-  HTTP 与 SOCKS5 共用每个网关的自定义端口。Ctrl+C 停止。
+  HTTP、HTTPS 与 SOCKS5 共用每个网关的自定义端口。Ctrl+C 停止。
   ```
 - **管理账号**：默认用户名 `admin`、密码 `admin`；登录后在配置面板修改 `web_username` / `web_password`，保存后重启生效。它们与上游 `email` / `password` 独立。管理模式配置读取或校验失败时会停止启动，不回退到默认账号。
 - **访问地址自适应**：登录页、控制台与配置面板使用浏览器地址栏中的主机；管理入口保留实际 HTTP/HTTPS 协议与端口，适配 IPv4、IPv6、域名和端口转发。服务端路由 IP / 监听地址单独列为诊断，不再替换实际访问入口；诊断接口失败也保留当前入口。代理出口 IP 与这些地址分开显示。
-- **其他设备访问管理页**：运行 `./start_web.sh --web-host 0.0.0.0`（也可在配置中设 `web_host`），并确保管理端口已放行。默认回环监听保持不变；更换管理默认密码，远程登录使用 HTTPS 或 SSH 隧道。网关代理仍只监听服务器回环地址，不因管理页面可访问而自动开放代理端口。
+- **其他设备访问管理页**：运行 `./start_web.sh --web-host 0.0.0.0`（也可在配置中设 `web_host`），并确保管理端口已放行。默认回环监听保持不变；更换管理默认密码，远程登录使用 HTTPS 或 SSH 隧道。网关表单默认双栈全接口监听，远程使用应设置代理认证并限制防火墙来源；API 指定回环地址时仍只监听回环。
 - **自定义管理端口**：
   ```bash
   ./start_web.sh --web-port 8999
@@ -424,7 +424,7 @@ tail -f web.log
 ## 🔌 第三方客户端与系统集成
 
 URnetwork-Proxy 支持**两种接入模式**：
-1. **本地多网关模式（推荐）**：客户端直连本机网关（如 `127.0.0.1:10801`），享受单端口 HTTP/SOCKS5 自动识别与后台断线自动换线自愈。
+1. **本地多网关模式（推荐）**：客户端直连本机网关（如 `127.0.0.1:10801`），享受单端口 HTTP/HTTPS/SOCKS5 自动识别与后台断线自动换线自愈。
 2. **云端直连模式**：通过 CLI 生成的标准代理串直接接入官方远端出口。
 
 以下演示接入本地网关（监听于 `127.0.0.1:10801`）与云端直连节点的调用方法：

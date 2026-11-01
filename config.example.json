@@ -76,5 +76,11 @@
 
   // 允许访问的 Host / 域名白名单 (可选，默认为空表示在外网模式下不额外限制 Host 头)
   // 示例: ["192.168.1.100", "myproxy.example.com"]
-  "allowed_hosts": []
+  "allowed_hosts": [],
+
+  // HTTPS 代理证书和私钥路径，须成对配置；远程访问时证书须匹配访问域名或 IP。
+  // 留空使用 .local/gateway_tls.crt 和 gateway_tls.key；首次生成需要 OpenSSL 或 cryptography。
+  // 自签名证书需要在客户端导入信任，不影响目标 HTTPS 网站的独立证书校验。
+  "tls_cert_file": "",
+  "tls_key_file": ""
 }

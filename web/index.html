@@ -8,8 +8,8 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'">
   <title>URnetwork · 网关控制台</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='10' fill='%232e62ef'/%3E%3Cpath d='M9 9v9a7 7 0 0 0 14 0V9' fill='none' stroke='white' stroke-width='4'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/style.css?v=20261031.4">
-  <script src="/app.js?v=20261031.4" defer></script>
+  <link rel="stylesheet" href="/style.css?v=20261101.2">
+  <script src="/app.js?v=20261101.2" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -26,7 +26,7 @@
         <button class="nav-item" type="button" data-view="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="3"/><circle cx="16" cy="17" r="3"/></svg><span>配置面板</span></button>
       </nav>
       <div class="sidebar-bottom">
-        <div class="sidebar-foot"><span class="workspace-dot"></span> 本地服务 <span>HTTP / SOCKS5</span></div>
+        <div class="sidebar-foot"><span class="workspace-dot"></span> 本地服务 <span>HTTP / HTTPS / SOCKS5</span></div>
       </div>
     </aside>
 
@@ -117,6 +117,7 @@
                   <section class="config-section"><div class="config-section-title"><span aria-hidden="true">02</span><div><h2>默认出口策略</h2><p>仅用于命令行，不影响已有网关。</p></div></div><div class="form-row"><div><label for="config-default_mode">路由模式 <code>default_mode</code></label><select id="config-default_mode" data-config-field="default_mode"><option value="best">自动选择</option><option value="country">指定国家</option><option value="city">指定城市</option></select></div><div><label for="config-default_country">默认国家 <code>default_country</code></label><input id="config-default_country" data-config-field="default_country" type="text" minlength="2" maxlength="2" pattern="[A-Za-z]{2}" placeholder="US" spellcheck="false" required></div></div><p id="config-route-hint" class="field-hint">两位国家代码，如 US。城市模式使用 --target 指定。</p></section>
                   <section class="config-section"><div class="config-section-title"><span aria-hidden="true">03</span><div><h2>服务端点</h2><p>通常无需修改；更换 API 前先回收网关。</p></div></div><label for="config-api_base_url">API 网关 <code>api_base_url</code></label><input id="config-api_base_url" data-config-field="api_base_url" type="url" spellcheck="false" required><label for="config-ur_base_url">主站地址 <code>ur_base_url</code></label><input id="config-ur_base_url" data-config-field="ur_base_url" type="url" spellcheck="false" required><p class="field-hint">主站地址供命令行使用，地区列表由 API 提供。</p></section>
                   <section class="config-section"><div class="config-section-title"><span aria-hidden="true">04</span><div><h2>认证凭据</h2><p>用于上游账户，与控制台登录独立。</p></div></div><p class="notice">通常只需一种认证。遮罩保留原值，输入替换，清空删除。</p><p id="credential-lock" class="field-hint"></p><div class="form-row config-credentials"><div><label for="config-api_key">API Key <code>api_key</code></label><input id="config-api_key" data-config-field="api_key" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192" placeholder="未配置"></div><div><label for="config-jwt_token">JWT Token <code>jwt_token</code></label><input id="config-jwt_token" data-config-field="jwt_token" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192" placeholder="未配置"></div><div><label for="config-seedphrase">恢复助记词 <code>seedphrase</code></label><input id="config-seedphrase" data-config-field="seedphrase" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192" placeholder="未配置"></div><div><label for="config-auth_code">临时授权码 <code>auth_code</code></label><input id="config-auth_code" data-config-field="auth_code" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192" placeholder="未配置"></div><div><label for="config-email">登录邮箱 <code>email</code></label><input id="config-email" data-config-field="email" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192" placeholder="未配置"></div><div><label for="config-password">登录密码 <code>password</code></label><input id="config-password" data-config-field="password" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192" placeholder="未配置"></div></div><p class="field-hint">优先级：API Key → JWT → 授权码 → 邮箱/密码 → 助记词。保存不兑换授权码。</p></section>
+                  <section class="config-section"><div class="config-section-title"><span aria-hidden="true">05</span><div><h2>HTTPS 代理证书</h2><p>保存后重启生效；证书需匹配代理访问域名或 IP。</p></div></div><label for="config-tls_cert_file">证书路径 <code>tls_cert_file</code></label><input id="config-tls_cert_file" data-config-field="tls_cert_file" type="text" maxlength="1024" spellcheck="false" placeholder="留空使用本地自签名证书"><label for="config-tls_key_file">私钥路径 <code>tls_key_file</code></label><input id="config-tls_key_file" data-config-field="tls_key_file" type="text" maxlength="1024" spellcheck="false" placeholder="与证书成对配置"><p class="field-hint">默认生成到 .local，需要 OpenSSL 或 cryptography。客户端须信任自签名证书；请勿分发私钥。</p></section>
                 </div>
                 <div id="config-code" role="tabpanel" aria-labelledby="config-tab-source" hidden>
                   <div class="config-code-toolbar"><span><span class="tiny-dot success"></span> config.json</span><button id="config-format" class="text-button" type="button">校验并格式化</button></div><label class="sr-only" for="config-source">config.json 配置源码</label><textarea id="config-source" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off" aria-describedby="config-source-hint" aria-label="config.json 配置源码"></textarea><div class="config-code-footer"><span id="config-line-count">0 行</span><span>UTF-8 · JSONC</span></div><p id="config-source-hint" class="field-hint">支持注释和尾逗号；保存移除注释，保留扩展字段与遮罩凭据。</p>
@@ -131,7 +132,7 @@
             </aside>
           </div>
         </section>
-        <footer class="page-footer"><span>URnetwork <span class="footer-dot">·</span> <span data-ui-version>界面加载中…</span></span><span>HTTP / SOCKS5</span></footer>
+        <footer class="page-footer"><span>URnetwork <span class="footer-dot">·</span> <span data-ui-version>界面加载中…</span></span><span>HTTP / HTTPS / SOCKS5</span></footer>
       </main>
     </div>
   </div>

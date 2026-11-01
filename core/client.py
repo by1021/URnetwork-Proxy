@@ -441,6 +441,7 @@ class URClient:
             "test_commands": {
                 "curl_http": f'curl -s -x "http://{token}:{password}@{host}:{http_port}" https://api.ipify.org',
                 "curl_socks5": f'curl -s --socks5-hostname "{token}:{password}@{host}:{socks_port}" https://api.ipify.org',
+                "curl_https": f'curl -s -x "https://{token}:{password}@{host}:{https_port}" https://api.ipify.org',
                 "python_http": f"python -c \"import requests; print('HTTP 代理 IP:', requests.get('https://api.ipify.org', proxies={{'http': 'http://{token}:{password}@{host}:{http_port}', 'https': 'http://{token}:{password}@{host}:{http_port}'}}, timeout=10).text.strip())\"",
                 "python_socks5": f"python -c \"import requests; print('SOCKS5 代理 IP:', requests.get('https://api.ipify.org', proxies={{'http': 'socks5://{token}:{password}@{host}:{socks_port}', 'https': 'socks5://{token}:{password}@{host}:{socks_port}'}}, timeout=10).text.strip())\""
             }

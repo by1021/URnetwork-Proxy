@@ -9,7 +9,7 @@ python main.py --web --web-port 8777 --open-browser
 ```
 
 Windows 双击 `start_web.bat`。原 `start.bat` / `python main.py` 仍进入终端模式。
-运行依赖仍为 Python 3.10+ 标准库；Playwright 仅为可选开发测试依赖。
+运行使用 Python 3.10+ 标准库；HTTPS 网关须提供 PEM 证书/私钥，或安装系统 OpenSSL（也支持可选的 cryptography）用于首次生成。Playwright 仅为开发测试依赖。
 启动终端显示不含密码的管理链接和自动识别的运行环境 IP。使用用户名 / 密码登录，初始均为 `admin`；登录后仍以 HttpOnly / SameSite Cookie 访问管理 API。旧令牌链接不再登录。管理模式配置读取或校验失败会停止启动，不会回退到默认账号；修复文件后再启动。
 
 登录页、控制台和配置面板按浏览器地址栏显示当前访问主机；控制台管理入口保留实际协议、主机和端口。域名、IPv4、IPv6、HTTPS 和转发端口均跟随当前入口，不被服务器内网 IP 覆盖。诊断接口暂时失败仍显示访问入口。服务端路由 IP 与监听地址另外列为诊断，既不等于公网映射地址，也不等于代理出口 IP；不调用外部 IP 查询服务。
@@ -45,24 +45,30 @@ Windows 双击 `start_web.bat`。原 `start.bat` / `python main.py` 仍进入终
 
 1. 国家目录可搜索中文名、英文名、代码，查看数量、来源、更新时间和过期状态。
 2. 新建网关，填写名称、未占用的本地端口、国家或全球最佳策略。
-3. 等待“运行中”，复制 HTTP 或 SOCKS5 地址到客户端。
+3. 等待“运行中”，复制 HTTP、HTTPS 或 SOCKS5 地址到客户端。
 
-多个网关可分别使用 10801、10802、10803，绑定不同国家。每个网关 HTTP 和 SOCKS5 共用一个端口：
+多个网关可分别使用 10801、10802、10803，绑定不同国家。每个网关 HTTP、HTTPS 和 SOCKS5 共用一个端口：
 
 ```text
 HTTP:   http://127.0.0.1:10801
+HTTPS:  https://127.0.0.1:10801
 SOCKS5: socks5://127.0.0.1:10801
 ```
 
-访问 HTTPS 网站时，HTTP 代理使用 CONNECT，代理地址仍以 `http://` 开头。
+访问 HTTPS 网站时，HTTP 代理使用 CONNECT，代理地址仍以 `http://` 开头。`https://` 代理额外加密客户端到网关的链路，两者不是同一种协议。
 curl 用 `--socks5-hostname` 或 `socks5h://` 将目标域名交给远端解析。
 
 ```powershell
 curl.exe --noproxy "" -x http://127.0.0.1:10801 https://api.ipify.org
+curl.exe --noproxy "" --proxy-cacert .local/gateway_tls.crt -x https://127.0.0.1:10801 https://api.ipify.org
 curl.exe --noproxy "" --socks5-hostname 127.0.0.1:10801 https://api.ipify.org
 ```
 
-卡片显示和复制的 HTTP / SOCKS5 地址跟随浏览器当前访问主机，端口使用对应网关端口（不是管理端口）；IPv6 自动保留方括号，HTTPS 管理页仍复制 `http://` 与 `socks5://` 代理协议。剪贴板不可用时，手动复制弹框提供相同地址。
+卡片显示和复制的 HTTP / HTTPS / SOCKS5 地址跟随浏览器当前访问主机，端口使用对应网关端口（不是管理端口）；IPv6 自动保留方括号。剪贴板不可用时，手动复制弹框提供相同地址。
+
+默认自签名证书保存在 `.local/gateway_tls.crt`，私钥 `.local/gateway_tls.key`（POSIX 权限 0600）。客户端仅导入证书，不分发私钥。默认证书匹配 localhost、127.0.0.1 和 ::1；远程域名/IP 使用配置面板中的 `tls_cert_file`、`tls_key_file` 指向匹配访问主机的证书及私钥，保存后重启。显式路径错误会启动失败，不静默替换为其他服务的私钥。证书有效期一年，过期前配置续签证书并重启。
+
+创建报错会返回具体字段：端口须为 1–65535 且未被其他网关占用（已停止的网关仍保留端口）；检测间隔须为 5–3600 秒；国家与位置须匹配。`0.0.0.0`、`::`、`[::]` 统一为双栈全接口；回环地址仍只监听回环。
 
 网关默认采用 IPv4 + IPv6 双栈全接口监听，公网与局域网均可直接连接使用。可选配置代理用户名和密码；设置后生成的连接与复制格式严格遵循标准 `http://用户名:密码@主机:端口` 和 `socks5://用户名:密码@主机:端口`。手动改端口后客户端也要调整；自动换线上游不改变本地端口。
 

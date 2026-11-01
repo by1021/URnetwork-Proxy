@@ -44,6 +44,58 @@ def test_tcp_ping(host, port, timeout=3):
         return False, None, type(exc).__name__
 
 
+class _TLSChannel:
+    """TLS over a socket (possibly already TLS); do not detach an SSLSocket's FD."""
+    def __init__(self, sock, host, deadline):
+        self.sock, self.deadline = sock, deadline
+        self.incoming, self.outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+        self.tls = ssl.create_default_context().wrap_bio(
+            self.incoming, self.outgoing, server_hostname=host)
+        while True:
+            try:
+                self.tls.do_handshake()
+                self._flush()
+                break
+            except ssl.SSLWantReadError:
+                self._receive()
+
+    def _flush(self):
+        while self.outgoing.pending:
+            self.sock.settimeout(_remaining(self.deadline))
+            self.sock.sendall(self.outgoing.read())
+
+    def _receive(self):
+        self._flush()
+        self.sock.settimeout(_remaining(self.deadline))
+        data = self.sock.recv(16384)
+        if data:
+            self.incoming.write(data)
+        else:
+            self.incoming.write_eof()
+
+    def recv(self, n):
+        while True:
+            try:
+                return self.tls.read(n)
+            except ssl.SSLWantReadError:
+                self._receive()
+            except (ssl.SSLZeroReturnError, ssl.SSLEOFError):
+                return b''
+
+    def sendall(self, data):
+        view = memoryview(data)
+        while view:
+            n = self.tls.write(view[:16384])
+            view = view[n:]
+            self._flush()
+
+    def settimeout(self, value):
+        self.sock.settimeout(value)
+
+    def close(self):
+        self.sock.close()
+
+
 def _probe(host, port, token, password, target_host, timeout, protocol,
            target_port=443, use_tls=True):
     start = time.monotonic()
@@ -78,6 +130,17 @@ def _probe(host, port, token, password, target_host, timeout, protocol,
             if length is None:
                 raise OSError('Invalid SOCKS reply')
             _recv(sock, length + 2, deadline)
+        elif protocol == 'https':
+            proxy_ctx = ssl.create_default_context()
+            sock.settimeout(_remaining(deadline))
+            sock = proxy_ctx.wrap_socket(sock, server_hostname=host)
+            auth = base64.b64encode(f'{token}:{password}'.encode()).decode()
+            dest = f'{target_host}:{target_port}'
+            sock.sendall((f'CONNECT {dest} HTTP/1.1\r\nHost: {dest}\r\n'
+                          f'Proxy-Authorization: Basic {auth}\r\n\r\n').encode())
+            header = _head(sock, deadline)
+            if header.split(b'\r\n', 1)[0].split()[1:2] != [b'200']:
+                raise OSError('HTTPS CONNECT rejected')
         else:
             auth = base64.b64encode(f'{token}:{password}'.encode()).decode()
             dest = f'{target_host}:{target_port}'
@@ -86,9 +149,10 @@ def _probe(host, port, token, password, target_host, timeout, protocol,
             header = _head(sock, deadline)
             if header.split(b'\r\n', 1)[0].split()[1:2] != [b'200']:
                 raise OSError('HTTP CONNECT rejected')
+
         if use_tls:
             sock.settimeout(_remaining(deadline))
-            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=target_host)
+            sock = _TLSChannel(sock, target_host, deadline)
         sock.settimeout(_remaining(deadline))
         sock.sendall((f'GET / HTTP/1.1\r\nHost: {target_host}\r\n'
                       'Connection: close\r\nAccept: text/plain\r\n\r\n').encode())
@@ -133,38 +197,62 @@ def test_socks5_proxy(host, port, token, password='none', target_host='api.ipify
     return _probe(host, port, token, password, target_host, timeout, 'socks', **kwargs)
 
 
-def test_full_proxy(host, http_port, socks_port, token, password='none', timeout=15):
+def test_https_proxy(host, port, token, password='none', target_host='api.ipify.org', timeout=15, **kwargs):
+    target_port = kwargs.get('target_port', 80)
+    use_tls = kwargs.get('use_tls', False)
+    return _probe(host, port, token, password, target_host, timeout, 'https', target_port=target_port, use_tls=use_tls)
+
+
+def test_full_proxy(host, http_port, socks_port, token, password='none', timeout=15, https_port=None):
     http = test_http_proxy(host, http_port, token, password, timeout=timeout)
     socks = test_socks5_proxy(host, socks_port, token, password, timeout=timeout)
-    return dict(http_ok=http[0], http_ms=http[1], http_result=http[2],
-                socks_ok=socks[0], socks_ms=socks[1], socks_result=socks[2])
+    res = dict(http_ok=http[0], http_ms=http[1], http_result=http[2],
+               socks_ok=socks[0], socks_ms=socks[1], socks_result=socks[2])
+    if https_port:
+        https = test_https_proxy(host, https_port, token, password, timeout=timeout)
+        res.update(dict(https_ok=https[0], https_ms=https[1], https_result=https[2]))
+    return res
 
 
 async def probe_upstream(upstream, timeout=15):
     targets = ('api.ipify.org', 'checkip.amazonaws.com', 'icanhazip.com')
-    async def one(fn, port):
+    async def one(fn, port, **kw):
         last = (False, None, 'Probe failed')
         # Try primary and secondary targets, with quick retry on transient timeout
         for target in targets:
             last = await asyncio.to_thread(fn, upstream['host'], port,
-                upstream['auth_token'], upstream.get('password', 'none'), target, timeout)
+                upstream['auth_token'], upstream.get('password', 'none'), target, timeout, **kw)
             if last[0]:
                 return last
         # One quick retry on transient failure to avoid false-positive dead node rotation
         for target in targets[:2]:
             last = await asyncio.to_thread(fn, upstream['host'], port,
-                upstream['auth_token'], upstream.get('password', 'none'), target, timeout)
+                upstream['auth_token'], upstream.get('password', 'none'), target, timeout, **kw)
             if last[0]:
                 return last
         return last
-    http, socks = await asyncio.gather(one(test_http_proxy, upstream['http_port']),
-                                       one(test_socks5_proxy, upstream['socks_port']))
-    ok = http[0] and socks[0]
+
+    coros = [one(test_http_proxy, upstream['http_port']),
+             one(test_socks5_proxy, upstream['socks_port'])]
+    has_https = bool(upstream.get('https_port'))
+    if has_https:
+        coros.append(one(test_https_proxy, upstream['https_port']))
+
+    results = await asyncio.gather(*coros)
+    http, socks = results[0], results[1]
+    https = results[2] if has_https else (True, None, '')
+
+    ok = http[0] and socks[0] and (https[0] if has_https else True)
+    err_parts = ['ok' if http[0] else http[2], 'ok' if socks[0] else socks[2]]
+    if has_https:
+        err_parts.append('ok' if https[0] else https[2])
+    err_str = f"HTTP: {err_parts[0]}; SOCKS5: {err_parts[1]}" + (f"; HTTPS: {err_parts[2]}" if has_https else "")
+
     return dict(ok=ok, http_ok=http[0], socks_ok=socks[0],
-                exit_ip=socks[2] if socks[0] else (http[2] if http[0] else ''),
-                latency_ms=max(http[1] or 0, socks[1] or 0),
-                error='' if ok else 'HTTP: %s; SOCKS5: %s' % (
-                    'ok' if http[0] else http[2], 'ok' if socks[0] else socks[2]))
+                https_ok=https[0] if has_https else True,
+                exit_ip=socks[2] if socks[0] else (http[2] if http[0] else (https[2] if https[0] else '')),
+                latency_ms=max(http[1] or 0, socks[1] or 0, (https[1] or 0) if has_https else 0),
+                error='' if ok else err_str)
 
 
 async def probe_control():

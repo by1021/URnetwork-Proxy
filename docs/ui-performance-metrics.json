@@ -1,0 +1,113 @@
+{
+  "date": "2026-11-01",
+  "workload": {
+    "gateways": 100,
+    "events": 300,
+    "countries": 202
+  },
+  "method": "Real Chromium, offline API fixtures; renderer + forced layout; 2 warm-ups then 7 samples, milliseconds. Not a network/production throughput benchmark.",
+  "baseline_js_sha256": "a81ff173ea3ad262045522739402640af330b2b94e02bf1725c7faad1164933c",
+  "optimized_js_sha256": "daf7e3413649e0beb85337cc6dd4bb71c6bef4e241972d6bf3433e614a9ce28b",
+  "before": {
+    "single_gateway_ms": [
+      390.30000000074506,
+      385.8999999985099,
+      369.4000000022352,
+      375.5,
+      340.0999999977648,
+      334.1000000014901,
+      329.29999999701977
+    ],
+    "all_gateways_ms": [
+      312.70000000298023,
+      318.6000000014901,
+      331.80000000074506,
+      389.5,
+      342.5,
+      319.3999999985099,
+      355.69999999925494
+    ],
+    "unchanged_events_ms": [
+      173,
+      202.40000000223517,
+      149.79999999701977,
+      154.20000000298023,
+      148.29999999701977,
+      149.80000000074506,
+      160.10000000149012
+    ],
+    "unchanged_countries_ms": [
+      141.09999999776483,
+      144.60000000149012,
+      140.09999999776483,
+      149.70000000298023,
+      140.80000000074506,
+      150,
+      132.5
+    ],
+    "retained_cards": 0,
+    "initial_hidden_events": 300,
+    "initial_hidden_countries": 202,
+    "median_ms": {
+      "single_gateway_ms": 369.4,
+      "all_gateways_ms": 331.8,
+      "unchanged_events_ms": 154.2,
+      "unchanged_countries_ms": 141.1
+    },
+    "browser": "120.0.6099.224"
+  },
+  "after": {
+    "single_gateway_ms": [
+      2.699999999254942,
+      5.300000000745058,
+      2.599999997764826,
+      2.300000000745058,
+      2.600000001490116,
+      2.199999999254942,
+      2.300000000745058
+    ],
+    "all_gateways_ms": [
+      15.300000000745058,
+      15.300000000745058,
+      15,
+      16,
+      15.5,
+      14.700000002980232,
+      14.799999997019768
+    ],
+    "unchanged_events_ms": [
+      0.8000000007450581,
+      1,
+      0.7999999970197678,
+      0.8000000007450581,
+      0.6999999992549419,
+      2.100000001490116,
+      0.6999999992549419
+    ],
+    "unchanged_countries_ms": [
+      0.30000000074505806,
+      0.10000000149011612,
+      0.20000000298023224,
+      0.29999999701976776,
+      0.4000000022351742,
+      0.19999999925494194,
+      0.19999999925494194
+    ],
+    "retained_cards": 100,
+    "initial_hidden_events": 0,
+    "initial_hidden_countries": 0,
+    "median_ms": {
+      "single_gateway_ms": 2.6,
+      "all_gateways_ms": 15.3,
+      "unchanged_events_ms": 0.8,
+      "unchanged_countries_ms": 0.2
+    },
+    "browser": "120.0.6099.224"
+  },
+  "median_reduction_percent": {
+    "single_gateway_ms": 99.3,
+    "all_gateways_ms": 95.39,
+    "unchanged_events_ms": 99.48,
+    "unchanged_countries_ms": 99.86
+  }
+}

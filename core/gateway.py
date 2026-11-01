@@ -24,6 +24,8 @@ import time
 from typing import Any, Awaitable, Callable
 import uuid
 
+from .tls_helper import TLSConfigurationError
+
 
 DRAIN_SECONDS = 30.0
 BACKOFF_MIN = 5.0
@@ -74,51 +76,62 @@ def _error_code(prefix: str, error: Exception) -> str:
     return f"{prefix}_http_{status}" if status else prefix
 
 
+class GatewayValidationError(ValueError):
+    """Public, input-free validation message and field identifier."""
+    def __init__(self, field: str, message: str):
+        super().__init__(message)
+        self.field = field
+
+
 def _validate(data: dict[str, Any], base: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(data, dict) or set(data) - (set(CONFIG_DEFAULTS) | {"username", "password"}):
-        raise ValueError("invalid gateway configuration fields")
+        raise GatewayValidationError("configuration", "网关配置包含不支持的字段")
     cfg = dict(CONFIG_DEFAULTS if base is None else base)
     cfg.update(data)
     for key in ("name", "host", "country_code", "mode", "username", "password"):
         if not isinstance(cfg.get(key, ""), str):
-            raise ValueError(f"{key} must be a string")
+            raise GatewayValidationError(key, f"{key} 必须是文本")
     if not cfg["name"].strip() or len(cfg["name"]) > 128:
-        raise ValueError("name must contain 1..128 characters")
+        raise GatewayValidationError("name", "网关名称须为 1–128 个字符")
     raw_host = cfg["host"].strip()
     clean_host = "127.0.0.1" if raw_host == "localhost" else raw_host
-    if clean_host in ("::", "", "dual", "all"):
+    if clean_host.startswith("[") and clean_host.endswith("]"):
+        clean_host = clean_host[1:-1]
+    if clean_host in ("::", "0.0.0.0", "", "dual", "all"):
         cfg["host"] = "::"
     else:
         try:
             address = ipaddress.ip_address(clean_host)
         except ValueError:
-            raise ValueError("host must be a valid IP or dual-stack address") from None
+            raise GatewayValidationError("host", "监听地址须为回环 IP、0.0.0.0 或 ::") from None
         if not address.is_loopback or "%" in clean_host:
-            raise ValueError("host must be a loopback or dual-stack IP address")
+            raise GatewayValidationError("host", "监听地址须为回环 IP、0.0.0.0 或 ::")
         cfg["host"] = str(address)
     for key, minimum, maximum in (("port", 1, 65535), ("interval", 5, 3600),
                                   ("failures_before_rotate", 1, 100)):
         if type(cfg[key]) is not int or not minimum <= cfg[key] <= maximum:
-            raise ValueError(f"{key} must be an integer in {minimum}..{maximum}")
+            label = {"port": "端口", "interval": "检测间隔（秒）", "failures_before_rotate": "连续失败阈值"}[key]
+            raise GatewayValidationError(key, f"{label}须为 {minimum}–{maximum} 的整数")
     for key in ("enabled", "auto_heal"):
         if type(cfg[key]) is not bool:
-            raise ValueError(f"{key} must be a boolean")
+            raise GatewayValidationError(key, f"{key} 必须是布尔值")
     cfg["country_code"] = cfg["country_code"].strip().upper()
     if cfg["mode"] not in ("best", "country"):
-        raise ValueError("mode must be best or country")
+        raise GatewayValidationError("mode", "出口模式须为自动选择或指定国家")
     if cfg["mode"] == "country":
         if not re.fullmatch(r"[A-Z]{2}", cfg["country_code"]):
-            raise ValueError("country mode requires a two-letter country_code")
+            raise GatewayValidationError("country_code", "指定国家须提供两位国家代码")
         if not isinstance(cfg["location_id"], str) or not cfg["location_id"].strip():
-            raise ValueError("country mode requires location_id")
+            raise GatewayValidationError("location_id", "请选择国家 / 地区，位置标识不能为空")
     else:
         cfg["country_code"], cfg["location_id"] = "", None
     if cfg["location_id"] is not None and len(cfg["location_id"]) > 256:
-        raise ValueError("location_id is too long")
+        raise GatewayValidationError("location_id", "国家位置标识长度超出限制")
     if bool(cfg.get("username")) != bool(cfg.get("password")):
-        raise ValueError("username and password must be supplied together")
+        field = "username" if cfg.get("username") else "password"
+        raise GatewayValidationError(field, "代理用户名与密码须同时填写或同时留空")
     if any(len(cfg.get(key, "").encode("utf-8")) > 255 for key in ("username", "password")):
-        raise ValueError("local credentials must fit SOCKS5 authentication")
+        raise GatewayValidationError("username", "代理用户名和密码各须不超过 255 字节")
     return cfg
 
 
@@ -159,11 +172,13 @@ class _Owned:
 class GatewayManager:
     def __init__(self, client: Any, state_path: str | os.PathLike[str], *,
                  probe: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
-                 relay_factory: Callable[..., Any] | None = None) -> None:
+                 relay_factory: Callable[..., Any] | None = None,
+                 tls_config: dict[str, Any] | None = None) -> None:
         self.client = client
         self.state_path = Path(state_path)
         self._probe = probe or _default_probe
-        self._relay_factory = relay_factory or _default_relay
+        self._relay_factory = relay_factory or (lambda *a, **kw: _default_relay(
+            *a, **kw, tls_config={"state_dir": self.state_path.parent, **(tls_config or {})}))
         self._gateways: dict[str, _Gateway] = {}
         self._owned: dict[str, _Owned] = {}
         self._reservations: dict[tuple[str, int], str] = {}
@@ -341,11 +356,11 @@ class GatewayManager:
             (g.config["host"], g.config["port"]) == endpoint
             or (port == g.config["port"] and (is_wildcard or g.config["host"] in wildcards))
         ) for g in self._gateways.values()):
-            raise ValueError("gateway endpoint already configured")
+            raise GatewayValidationError("port", "端口已被其他网关占用（包含已停止的网关），请选择其他端口")
         if self._reservations.get(endpoint, gateway_id) != gateway_id:
-            raise ValueError("gateway endpoint is reserved")
+            raise GatewayValidationError("port", "端口正在被其他网关占用，请选择其他端口")
         if is_wildcard and any(p == port and gid != gateway_id for (h, p), gid in self._reservations.items()):
-            raise ValueError("gateway endpoint is reserved")
+            raise GatewayValidationError("port", "端口正在被其他网关占用，请选择其他端口")
         self._reservations[endpoint] = gateway_id
         return endpoint
 
@@ -427,6 +442,10 @@ class GatewayManager:
         if g.relay is None:
             try:
                 g.relay = await self._bind(g, g.config)
+            except TLSConfigurationError:
+                self._failure(g, "local_tls_failed", "error")
+                g.next_check = self._clock() + g.config["interval"]
+                return
             except Exception:
                 self._failure(g, "local_bind_failed", "error")
                 g.next_check = self._clock() + g.config["interval"]
@@ -668,6 +687,10 @@ class GatewayManager:
                 raise ValueError("stop gateway before changing credentials on the same port")
             try:
                 new_relay = await self._bind(g, cfg)
+            except TLSConfigurationError:
+                g.last_error = "local_tls_failed"
+                self._event(g.id, "warning", g.last_error)
+                return
             except Exception:
                 g.last_error = "local_bind_failed"
                 self._event(g.id, "warning", g.last_error)

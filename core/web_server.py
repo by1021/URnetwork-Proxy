@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .client import URClient
-from .gateway import GatewayManager
+from .gateway import GatewayManager, GatewayValidationError, _validate
 from .locator import CountryCatalog
 from .storage import ProcessLock
 from .config import CONFIG_FILE, CREDENTIAL_FIELDS, SECRET_FIELDS, DEFAULT_CONFIG, ConfigError, parse_config, validate_config
@@ -60,7 +60,10 @@ class ManagementApp:
         self.catalog = CountryCatalog(self.client)
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, name="gateway-event-loop", daemon=True)
-        self.manager = manager or GatewayManager(self.client, self.state_dir / "gateways.json")
+        self.manager = manager or GatewayManager(self.client, self.state_dir / "gateways.json", tls_config={
+            "cert_file": self.config.get("tls_cert_file", ""),
+            "key_file": self.config.get("tls_key_file", ""),
+        })
         self.sessions = {}
         self.login_attempts = deque()
         self.auth_lock = threading.Lock()
@@ -314,7 +317,7 @@ class ManagementApp:
                           if c["code"] == str(data.get("country_code", "")).upper()
                           and c["location_id"] == data.get("location_id")), None)
             if not match:
-                raise ApiProblem(400, "国家与 location_id 不匹配，请刷新国家列表重新选择")
+                raise GatewayValidationError("location_id", "国家与位置不匹配，请刷新国家列表重新选择")
 
     async def gateway_mutation(self, method, gateway_id, action, data):
         if self.updating_credentials:
@@ -341,6 +344,7 @@ class ManagementApp:
     async def _gateway_mutation(self, method, gateway_id, action, data):
         records = self._load_gateway_auth()
         if method == "POST" and not gateway_id:
+            data = _validate(data)
             await self.validate_binding(data)
             res = await self.manager.create_gateway(data)
             gid = res.get("id")
@@ -354,7 +358,14 @@ class ManagementApp:
             current = next((g for g in await self.manager.list_gateways() if g["id"] == gateway_id), None)
             if current is None:
                 raise KeyError(gateway_id)
-            await self.validate_binding({**current, **data})
+            # Validate only configuration fields, not the snapshot's status metadata.
+            from .gateway import CONFIG_DEFAULTS
+            normalized = _validate(data, {**CONFIG_DEFAULTS,
+                **{k: current[k] for k in CONFIG_DEFAULTS if k in current},
+                **records.get(gateway_id, {})})
+            await self.validate_binding(normalized)
+            if "country_code" in data:
+                data = {**data, "country_code": normalized["country_code"]}
             res = await self.manager.update_gateway(gateway_id, data)
             gid = gateway_id
             if data.get("username") and data.get("password"):
@@ -629,6 +640,8 @@ class ManagementHandler(BaseHTTPRequestHandler):
             self._send(409, {"error": str(exc)})
         except ConfigError as exc:
             self._send(400, {"error": str(exc)})
+        except GatewayValidationError as exc:
+            self._send(400, {"error": str(exc), "field": exc.field})
         except KeyError:
             self._send(404, {"error": "网关或资源不存在"})
         except (ValueError, TypeError):
@@ -687,7 +700,7 @@ def serve(config, *, host="127.0.0.1", port=8777, state_dir=None, open_browser=F
         print("登录方式：用户名 / 密码（可在配置面板修改 web_username / web_password，重启生效）", flush=True)
         if app.web_password == DEFAULT_CONFIG["web_password"]:
             print("提示：正在使用默认管理密码，请在配置面板修改。", flush=True)
-        print("HTTP 与 SOCKS5 共用每个网关的自定义端口。Ctrl+C 停止。", flush=True)
+        print("HTTP、HTTPS 与 SOCKS5 共用每个网关的自定义端口。Ctrl+C 停止。", flush=True)
         if open_browser and runtime["management_urls"]:
             webbrowser.open(runtime["management_urls"][0])
         server.serve_forever(poll_interval=0.3)

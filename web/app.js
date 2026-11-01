@@ -3,7 +3,7 @@
   'use strict';
 
   // Keep the entry URL's version in index.html in sync when releasing UI fixes.
-  const UI_VERSION = '20261031.4';
+  const UI_VERSION = '20261101.2';
   const POLL_MS = 5000;
   const ACCOUNT_MS = 60000;
   const COUNTRIES_MS = 300000;
@@ -17,13 +17,17 @@
     loads: new Map(), controllers: new Set(), timers: [], pending: new Set(),
     errors: new Map(), editing: null, deleting: null, gatewayRender: '',
     savingGateway: false, savingSettings: false, loggingIn: false, view: 'gateways',
-    configSnapshot: null, configDraft: {}, configMode: 'form', configDirty: false, configLoading: false
+    configSnapshot: null, configDraft: {}, configMode: 'form', configDirty: false, configLoading: false,
+    gatewayCards: new Map(), eventRows: new Map(), recentRows: new Map(), frames: new Map(),
+    refreshed: new Map(), eventOptionsRender: '', rawCountries: [], countrySorts: new Map(),
+    countrySnapshot: '', countryRender: '', countryOptionsRender: ''
   };
   const credentialNames = { api_key: 'API Key', seedphrase: '助记词', jwt_token: 'JWT Token', auth_code: '授权码', email: '邮箱 / 密码', password: '邮箱 / 密码' };
   const eventMessages = {
     created: '网关已创建', upstream_ready: '上游连接已就绪', stopped: '网关已停止',
     deleted: '网关已删除', updated: '网关设置已更新', network_offline: '网络离线，等待恢复',
     operation_failed: '操作失败，请稍后重试', local_bind_failed: '本地端口绑定失败，请检查占用',
+    local_tls_failed: 'HTTPS 证书准备失败，请检查证书和私钥路径，或安装 OpenSSL',
     creation_backoff: '创建已退避，等待重试', owned_cleanup_pending: '旧代理资源正在回收',
     hourly_creation_limit: '已达每小时创建上限', remote_create_failed: '远端代理创建失败',
     invalid_create_response: '远端创建响应无效', duplicate_client_id: '远端返回重复的代理标识',
@@ -41,12 +45,61 @@
   };
   const chineseNames = typeof Intl.DisplayNames === 'function' ? new Intl.DisplayNames(['zh-CN'], { type: 'region' }) : null;
   const englishNames = typeof Intl.DisplayNames === 'function' ? new Intl.DisplayNames(['en'], { type: 'region' }) : null;
+  const numberFormat = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
+  const dateFormat = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false });
+  const timeFormat = new Intl.DateTimeFormat('zh-CN', { hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false });
+  const countryCollator = new Intl.Collator('zh-CN');
+  const regionNames = new Map();
+  const countrySearch = new WeakMap();
+  const gatewayLiveParts = new WeakMap();
 
   function node(tag, className, text) {
     const element = document.createElement(tag);
     if (className) element.className = className;
     if (text !== undefined) element.textContent = String(text);
     return element;
+  }
+
+  function setText(target, value) {
+    const element = typeof target === 'string' ? $(target) : target, text = String(value);
+    if (element.textContent !== text) element.textContent = text;
+  }
+
+  function scheduleRender(key, render) {
+    if (state.frames.has(key)) return;
+    state.frames.set(key, requestAnimationFrame(() => {
+      state.frames.delete(key);
+      if (state.authenticated) render();
+    }));
+  }
+
+  // Replace changed entries in place; leave unchanged controls attached (and focused).
+  // Cache only displayed entries so removed gateways/events cannot accumulate.
+  function reconcile(container, items, cache, keyOf, signatureOf, create, update) {
+    const keys = new Set(items.map(keyOf));
+    for (const [key, entry] of cache) {
+      if (!keys.has(key)) { entry.element.remove(); cache.delete(key); }
+    }
+    const elements = items.map((item) => {
+      const key = keyOf(item), signature = signatureOf(item);
+      let entry = cache.get(key);
+      if (!entry || entry.signature !== signature) {
+        if (entry && update?.(entry.element, item)) entry.signature = signature;
+        else {
+          const element = create(item);
+          if (entry?.element.parentNode === container) entry.element.replaceWith(element);
+          entry = { signature, element };
+          cache.set(key, entry);
+        }
+      }
+      return entry.element;
+    });
+    let cursor = container.firstChild;
+    for (const element of elements) {
+      if (element === cursor) cursor = cursor.nextSibling;
+      else container.insertBefore(element, cursor);
+    }
+    while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
   }
 
   function message(id, text, kind) {
@@ -82,7 +135,7 @@
 
   function amount(value, unit = '') {
     const parsed = number(value);
-    return parsed === null ? '—' : `${parsed.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}${unit}`;
+    return parsed === null ? '—' : `${numberFormat.format(parsed)}${unit}`;
   }
 
   function dateText(value) {
@@ -92,14 +145,16 @@
       input = Number(value) * (Number(value) < 1e12 ? 1000 : 1);
     }
     const date = new Date(input);
-    return Number.isNaN(date.getTime()) ? '时间格式未知' : date.toLocaleString('zh-CN', { hour12: false });
+    return Number.isNaN(date.getTime()) ? '时间格式未知' : dateFormat.format(date);
   }
 
   function regionName(code, language = 'zh') {
     const normalized = String(code || '').toUpperCase();
     if (!/^[A-Z]{2}$/.test(normalized)) return normalized || '未指定';
     const names = language === 'en' ? englishNames : chineseNames;
-    return names ? names.of(normalized) : normalized;
+    const key = `${language}:${normalized}`;
+    if (!regionNames.has(key)) regionNames.set(key, names ? names.of(normalized) : normalized);
+    return regionNames.get(key);
   }
 
   function countryName(country) {
@@ -108,8 +163,9 @@
   }
 
   function countryMatches(country, query) {
-    const haystack = [country.code, country.name, countryName(country), regionName(country.code, 'en')].join(' ').toLowerCase();
-    return haystack.includes(query.trim().toLowerCase());
+    if (!countrySearch.has(country)) countrySearch.set(country,
+      [country.code, country.name, countryName(country), regionName(country.code, 'en')].join(' ').toLowerCase());
+    return countrySearch.get(country).includes(query.trim().toLowerCase());
   }
 
   function isCancelled(error) {
@@ -169,7 +225,7 @@
     return exclusive(key, async () => {
       const button = $(buttonId);
       button.disabled = true;
-      try { await work(); } catch (error) {
+      try { await work(); state.refreshed.set(key, Date.now()); } catch (error) {
         if (!isCancelled(error) && state.authenticated) message(errorId, error.message);
       } finally { button.disabled = false; }
     });
@@ -187,6 +243,10 @@
     state.epoch += 1;
     state.timers.forEach(clearInterval);
     state.timers = [];
+    state.frames.forEach(cancelAnimationFrame); state.frames.clear();
+    state.gatewayCards.clear(); state.eventRows.clear(); state.recentRows.clear();
+    state.refreshed.clear(); state.countrySorts.clear();
+    state.eventOptionsRender = ''; state.countrySnapshot = ''; state.countryRender = ''; state.countryOptionsRender = '';
     state.controllers.forEach((controller) => controller.abort());
     state.loads.clear();
     state.gateways = []; state.countries = []; state.rawCountries = []; state.events = []; state.after = 0;
@@ -200,6 +260,7 @@
     ['stat-total', 'stat-running', 'stat-countries', 'stat-connections', 'coverage-count', 'current-credential-type', 'api-base-url'].forEach((id) => { $(id).textContent = '—'; });
     document.querySelectorAll('[data-country-source], [data-country-updated]').forEach((element) => { element.textContent = '—'; });
     $('event-gateway').replaceChildren(new Option('全部网关', ''));
+    $('gateway-country').replaceChildren();
     state.configSnapshot = null; state.configDraft = {}; state.configDirty = false; state.configLoading = false;
     document.querySelectorAll('[data-config-field]').forEach((input) => { input.value = ''; });
     $('config-source').value = '';
@@ -268,12 +329,28 @@
 
   function startPolling() {
     state.timers.forEach(clearInterval);
-    loadGateways(); loadEvents(); loadCountries(); loadAccount(); loadSettings(); loadHealth();
+    syncVisible();
     state.timers = [
-      setInterval(() => { loadGateways(); loadEvents(); }, POLL_MS),
-      setInterval(() => { loadAccount(); loadHealth(); }, ACCOUNT_MS),
-      setInterval(loadCountries, COUNTRIES_MS)
+      setInterval(() => { if (canPoll()) { loadGateways(); loadEvents(); } }, POLL_MS),
+      setInterval(() => { if (canPoll()) { loadAccount(); loadHealth(); } }, ACCOUNT_MS),
+      setInterval(() => { if (canPoll()) loadCountries(); }, COUNTRIES_MS)
     ];
+  }
+
+  function canPoll() { return state.authenticated && !document.hidden; }
+
+  function syncVisible() {
+    if (!canPoll()) return;
+    // Paint any response completed while hidden before waiting for the network.
+    if (state.gatewaysReady) renderGateways();
+    renderEvents();
+    if (state.countryData) renderCountries();
+    if ($('gateway-dialog').open) renderCountryOptions();
+    loadGateways(); loadEvents(); loadSettings();
+    const due = (key, interval) => !state.refreshed.has(key) || Date.now() - state.refreshed.get(key) >= interval;
+    if (due('account', ACCOUNT_MS)) loadAccount();
+    if (due('health', ACCOUNT_MS)) loadHealth();
+    if (due('countries', COUNTRIES_MS)) loadCountries();
   }
 
   async function loadHealth() {
@@ -281,6 +358,7 @@
       try {
         const data = await api('/api/health');
         if (data.status !== 'ok') throw new Error('服务状态异常');
+        state.refreshed.set('health', Date.now());
         $('health-state').textContent = '服务在线';
         $('health-state').className = 'health-state online';
       } catch (error) {
@@ -300,13 +378,17 @@
         state.gateways = data.gateways;
         state.gatewaysReady = true;
         message('gateways-error', '');
-        $('gateway-sync').textContent = `已同步 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })} · 每 5 秒刷新`;
-        renderGateways(); updateEventGatewayOptions(); updateCredentialLock();
+        $('gateway-sync').textContent = `已同步 ${timeFormat.format(new Date())} · 每 5 秒刷新`;
+        renderGateways(); updateEventGatewayOptions(); renderEvents(); updateCredentialLock();
       } catch (error) {
+        if (isCancelled(error) || !state.authenticated) throw error;
         state.gatewaysReady = false;
         updateCredentialLock();
         $('gateway-sync').textContent = '同步失败，5 秒后重试';
-        if (!state.gateways.length) renderEmpty($('gateway-list'), '暂未取得网关', '请检查服务后刷新。');
+        if (!state.gateways.length) {
+          state.gatewayRender = ''; state.gatewayCards.clear();
+          renderEmpty($('gateway-list'), '暂未取得网关', '请检查服务后刷新。');
+        }
         throw error;
       } finally { $('gateway-list').setAttribute('aria-busy', 'false'); }
     });
@@ -336,29 +418,51 @@
   }
 
   function renderGateways() {
+    if (document.hidden) return;
     const gateways = state.gateways.filter(gatewayMatches);
     const running = state.gateways.filter((gateway) => gateway.enabled && gatewayStatus(gateway)[1] === 'good').length;
-    $('stat-total').textContent = state.gateways.length;
-    $('stat-running').textContent = running;
-    $('stat-connections').textContent = amount(state.gateways.reduce((sum, gateway) => sum + (number(gateway.connections) || 0), 0));
-    $('gateway-count').textContent = gateways.length;
-    $('nav-gateway-count').textContent = state.gateways.length;
-    const signature = JSON.stringify([gateways, [...state.pending], [...state.errors]]);
+    setText('stat-total', state.gateways.length);
+    setText('stat-running', running);
+    setText('stat-connections', amount(state.gateways.reduce((sum, gateway) => sum + (number(gateway.connections) || 0), 0)));
+    setText('gateway-count', gateways.length);
+    setText('nav-gateway-count', state.gateways.length);
+    if (state.view !== 'gateways') return;
+    const signature = JSON.stringify([gateways, state.gateways.length, [...state.pending], [...state.errors]]);
     if (signature === state.gatewayRender) return;
     state.gatewayRender = signature;
     if (!gateways.length) {
+      state.gatewayCards.clear();
       renderEmpty($('gateway-list'), state.gateways.length ? '没有匹配的网关' : '暂无网关', state.gateways.length ? '试试其他关键词或状态。' : '新建网关后即可使用代理。', !state.gateways.length);
       return;
     }
     const focused = document.activeElement;
     const focusedId = focused.closest('[data-gateway-id]')?.dataset.gatewayId;
     const focusedAction = focused.dataset.action;
-    $('gateway-list').replaceChildren(...gateways.map(gatewayCard));
+    reconcile($('gateway-list'), gateways, state.gatewayCards, (gateway) => String(gateway.id),
+      (gateway) => JSON.stringify([gateway, state.pending.has(String(gateway.id)), state.errors.get(String(gateway.id))]), gatewayCard, updateGatewayLive);
     if (focusedId && focusedAction) {
       const card = [...$('gateway-list').children].find((item) => item.dataset.gatewayId === focusedId);
       const control = card && [...card.querySelectorAll('button')].find((item) => item.dataset.action === focusedAction);
       if (control && !control.disabled) control.focus({ preventScroll: true });
     }
+  }
+
+  function gatewayLayout(gateway) {
+    // Only telemetry can be patched without rebuilding action/address closures.
+    const { connections, latency_ms, exit_ip, failures, rotations, last_check, ...layout } = gateway;
+    return JSON.stringify([layout, state.pending.has(String(gateway.id)), state.errors.get(String(gateway.id))]);
+  }
+
+  function updateGatewayLive(card, gateway) {
+    const parts = gatewayLiveParts.get(card);
+    if (!parts || parts.layout !== gatewayLayout(gateway)) return false;
+    setText(parts.facts[0], gateway.exit_ip || '等待连接');
+    setText(parts.facts[1], amount(gateway.latency_ms, ' ms'));
+    setText(parts.facts[2], amount(gateway.connections));
+    setText(parts.meta[1], `失败 ${amount(gateway.failures)} / ${amount(gateway.failures_before_rotate)}`);
+    setText(parts.meta[2], `换线 ${amount(gateway.rotations)} 次`);
+    setText(parts.lastCheck, `上次检查 ${dateText(gateway.last_check)}`);
+    return true;
   }
 
   function gatewayCard(gateway) {
@@ -372,10 +476,13 @@
     const [label, tone] = gatewayStatus(gateway);
     const badge = node('span', `badge ${tone}`); badge.append(node('span', 'badge-dot'), document.createTextNode(label));
     header.append(node('span', `country-emblem${gateway.mode === 'best' ? ' auto' : ''}`, gateway.mode === 'best' ? '◎' : gateway.country_code || '—'), identity, badge);
-    card.append(header, gatewayFacts(gateway), gatewayAddresses(gateway));
+    const facts = gatewayFacts(gateway);
+    card.append(header, facts, gatewayAddresses(gateway));
     const meta = node('div', 'gateway-meta');
     meta.append(node('span', '', gateway.auto_heal ? `↻ 自动恢复 · ${amount(gateway.interval, 's')}` : '自动恢复关闭'), node('span', '', `失败 ${amount(gateway.failures)} / ${amount(gateway.failures_before_rotate)}`), node('span', '', `换线 ${amount(gateway.rotations)} 次`));
-    card.append(meta, node('p', 'gateway-last-check', `上次检查 ${dateText(gateway.last_check)}`));
+    const lastCheck = node('p', 'gateway-last-check', `上次检查 ${dateText(gateway.last_check)}`);
+    card.append(meta, lastCheck);
+    gatewayLiveParts.set(card, { layout: gatewayLayout(gateway), facts: [...facts.querySelectorAll('dd')], meta: [...meta.children], lastCheck });
     const error = eventMessage(state.errors.get(String(gateway.id)) || gateway.last_error);
     if (error) card.append(node('p', 'notice error', error));
     if (busy) card.append(node('p', 'field-hint', '处理中…'));
@@ -401,8 +508,8 @@
     const host = window.location.hostname;
     const bindHost = gateway.host === '::1' ? '[::1]' : gateway.host;
     const hasAuth = Boolean(gateway.username && gateway.password);
-    const authPrefix = hasAuth ? `${gateway.username}:${gateway.password}@` : '';
-    for (const [label, protocol] of [['HTTP', 'http'], ['SOCKS5', 'socks5']]) {
+    const authPrefix = hasAuth ? `${encodeURIComponent(gateway.username)}:${encodeURIComponent(gateway.password)}@` : '';
+    for (const [label, protocol] of [['HTTP', 'http'], ['HTTPS', 'https'], ['SOCKS5', 'socks5']]) {
       const address = `${protocol}://${authPrefix}${host}:${gateway.port}`;
       const row = node('div', 'address-row');
       const code = node('code', '', `${authPrefix}${host}:${gateway.port}`); code.title = address;
@@ -412,6 +519,7 @@
       button.addEventListener('click', () => copyAddress(address));
       row.append(node('span', 'address-kind', label), code, button); container.append(row);
     }
+    container.append(node('p', 'field-hint', 'HTTPS 为到代理的 TLS 加密；自签名证书需导入信任，远程访问请配置匹配主机名的证书。'));
     if (hasAuth) {
       container.append(node('p', 'field-hint', '已启用代理认证'));
     }
@@ -480,35 +588,48 @@
       try { acceptCountries(await api('/api/countries')); }
       catch (error) {
         document.querySelectorAll('[data-country-stale]').forEach((element) => { element.hidden = false; element.textContent = '同步失败，显示上次数据'; });
-        if (!state.countryData) renderEmpty($('country-list'), '位置数据暂不可用', '请刷新重试，已有网关不受影响。');
+        if (!state.countryData) {
+          state.countryRender = '';
+          renderEmpty($('country-list'), '位置数据暂不可用', '请刷新重试，已有网关不受影响。');
+        }
         if ($('gateway-dialog').open) message('country-picker-error', error.message);
         throw error;
       } finally { $('country-list').setAttribute('aria-busy', 'false'); }
     });
   }
 
-    function sortCountries(countries, sortKey = 'providers-desc') {
+  function sortCountries(countries, sortKey = 'providers-desc') {
     const list = [...countries];
     switch (sortKey) {
       case 'providers-desc':
-        return list.sort((a, b) => (b.providers - a.providers) || countryName(a).localeCompare(countryName(b), 'zh-CN'));
+        return list.sort((a, b) => (b.providers - a.providers) || countryCollator.compare(countryName(a), countryName(b)));
       case 'providers-asc':
-        return list.sort((a, b) => (a.providers - b.providers) || countryName(a).localeCompare(countryName(b), 'zh-CN'));
+        return list.sort((a, b) => (a.providers - b.providers) || countryCollator.compare(countryName(a), countryName(b)));
       case 'name-asc':
-        return list.sort((a, b) => countryName(a).localeCompare(countryName(b), 'zh-CN'));
+        return list.sort((a, b) => countryCollator.compare(countryName(a), countryName(b)));
       case 'code-asc':
         return list.sort((a, b) => a.code.localeCompare(b.code));
       default:
-        return list.sort((a, b) => (b.providers - a.providers) || countryName(a).localeCompare(countryName(b), 'zh-CN'));
+        return list.sort((a, b) => (b.providers - a.providers) || countryCollator.compare(countryName(a), countryName(b)));
     }
+  }
+
+  function sortedCountries(sortKey) {
+    if (!state.countrySorts.has(sortKey)) state.countrySorts.set(sortKey, sortCountries(state.rawCountries, sortKey));
+    return state.countrySorts.get(sortKey);
   }
 
   function acceptCountries(data) {
     if (!Array.isArray(data.countries)) throw new Error('国家列表格式异常，请刷新重试。');
     state.countryData = data;
-    state.rawCountries = data.countries;
+    const signature = JSON.stringify(data.countries);
+    if (signature !== state.countrySnapshot) {
+      state.countrySnapshot = signature;
+      state.rawCountries = data.countries;
+      state.countrySorts.clear();
+    }
     const sortVal = $('country-sort')?.value || 'providers-desc';
-    state.countries = sortCountries(data.countries, sortVal);
+    state.countries = sortedCountries(sortVal);
     $('stat-countries').textContent = state.countries.length;
     $('coverage-count').textContent = state.countries.length;
     document.querySelectorAll('[data-country-source]').forEach((element) => { element.textContent = data.source || '未提供来源'; });
@@ -524,11 +645,14 @@
   }
 
   function renderCountries() {
+    if (state.view !== 'countries' || document.hidden) return;
     const sortVal = $('country-sort')?.value || 'providers-desc';
-    const sourceList = state.rawCountries ? [...state.rawCountries] : [...state.countries];
-    state.countries = sortCountries(sourceList, sortVal);
+    state.countries = sortedCountries(sortVal);
     const countries = state.countries.filter((country) => countryMatches(country, $('country-search').value));
-    $('country-result-count').textContent = `${countries.length} / ${state.countries.length} 个地区`;
+    setText('country-result-count', `${countries.length} / ${state.countries.length} 个地区`);
+    const signature = JSON.stringify([countries, state.countries.length]);
+    if (signature === state.countryRender) return;
+    state.countryRender = signature;
     if (!countries.length) { renderEmpty($('country-list'), state.countries.length ? '没有匹配的国家' : '当前没有可用国家', '试试其他名称或国家代码。'); return; }
     $('country-list').replaceChildren(...countries.map((country) => {
       const card = node('article', 'country-card');
@@ -544,18 +668,21 @@
   }
 
   function renderCountryOptions(preferred) {
+    if (document.hidden) return;
     const selected = preferred === undefined ? $('gateway-country').value : preferred;
     const sortVal = $('gateway-country-sort')?.value || $('country-sort')?.value || 'providers-desc';
-    let countries = state.rawCountries ? [...state.rawCountries] : [...state.countries];
-    countries = sortCountries(countries, sortVal);
-    countries = countries.filter((country) => countryMatches(country, $('gateway-country-search').value));
-    const options = countries.map((country) => new Option(`${countryName(country)} (${country.code}) · ${amount(country.providers)} 节点`, String(country.location_id)));
+    const countries = sortedCountries(sortVal).filter((country) => countryMatches(country, $('gateway-country-search').value));
+    const options = countries.map((country) => [`${countryName(country)} (${country.code}) · ${amount(country.providers)} 节点`, String(country.location_id)]);
     const current = state.editing;
     if (current?.mode === 'country' && current.location_id && !state.countries.some((country) => String(country.location_id) === String(current.location_id)) && !$('gateway-country-search').value) {
-      options.push(new Option(`${regionName(current.country_code)} (${current.country_code}) · 已保存，暂不可用`, String(current.location_id)));
+      options.push([`${regionName(current.country_code)} (${current.country_code}) · 已保存，暂不可用`, String(current.location_id)]);
     }
-    $('gateway-country').replaceChildren(new Option('请选择国家 / 地区', ''), ...options);
-    $('gateway-country').value = options.some((option) => option.value === String(selected)) ? String(selected) : '';
+    const signature = JSON.stringify(options);
+    if (signature !== state.countryOptionsRender) {
+      state.countryOptionsRender = signature;
+      $('gateway-country').replaceChildren(new Option('请选择国家 / 地区', ''), ...options.map(([label, value]) => new Option(label, value)));
+    }
+    $('gateway-country').value = options.some(([, value]) => value === String(selected)) ? String(selected) : '';
     const data = state.countryData;
     $('country-picker-note').textContent = data ? `${countries.length} 个匹配地区${data.stale ? ' · 缓存已过期' : ''}` : '正在获取地区，请稍候。';
     message('country-picker-error', data?.error ? safeMessage(data.error) : '');
@@ -698,7 +825,7 @@
     progress.setAttribute('aria-label', `今日已用 ${amount(data.used_gib)} GiB，总配额 ${amount(data.daily_quota_gib)} GiB`);
     const values = node('div', 'quota-numbers'); values.append(node('span', '', `已用 ${amount(data.used_gib, ' GiB')}`), node('span', '', `共 ${amount(data.daily_quota_gib, ' GiB')}`));
     const details = node('div', 'account-details');
-    details.append(node('p', '', data.network_name || '当前账户'), node('p', 'muted', `${data.is_guest ? '访客账户' : '已连接账户'} · ${data.plan_tier || '套餐未提供'}`), node('p', 'muted', `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`));
+    details.append(node('p', '', data.network_name || '当前账户'), node('p', 'muted', `${data.is_guest ? '访客账户' : '已连接账户'} · ${data.plan_tier || '套餐未提供'}`), node('p', 'muted', `更新于 ${timeFormat.format(new Date())}`));
     $('account-data').replaceChildren(title, remaining, progress, values, details);
   }
 
@@ -831,15 +958,17 @@
       try {
         const data = await api(`/api/events?after=${state.after}`);
         if (!Array.isArray(data.events)) throw new Error('事件列表格式异常，请稍后重试。');
-        const events = new Map(state.events.map((event) => [Number(event.id), event]));
-        for (const event of data.events) {
-          const id = Number(event.id);
-          if (!Number.isSafeInteger(id) || id < 0) continue;
-          events.set(id, event); state.after = Math.max(state.after, id);
+        if (data.events.length) {
+          const events = new Map(state.events.map((event) => [Number(event.id), event]));
+          for (const event of data.events) {
+            const id = Number(event.id);
+            if (!Number.isSafeInteger(id) || id < 0) continue;
+            events.set(id, event); state.after = Math.max(state.after, id);
+          }
+          state.events = [...events.values()].sort((a, b) => Number(a.id) - Number(b.id)).slice(-EVENT_LIMIT);
         }
-        state.events = [...events.values()].sort((a, b) => Number(a.id) - Number(b.id)).slice(-EVENT_LIMIT);
         message('events-error', ''); message('recent-events-error', '');
-        $('event-sync').textContent = `已同步 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })} · 每 5 秒更新`;
+        $('event-sync').textContent = `已同步 ${timeFormat.format(new Date())} · 每 5 秒更新`;
         updateEventGatewayOptions(); renderEvents();
       } catch (error) {
         if (!isCancelled(error) && state.authenticated) message('recent-events-error', error.message);
@@ -849,21 +978,25 @@
   }
 
   function updateEventGatewayOptions() {
+    if (document.hidden) return;
     const select = $('event-gateway');
     const selected = select.value;
     const gateways = new Map(state.gateways.map((gateway) => [String(gateway.id), gateway.name]));
     state.events.forEach((event) => { if (event.gateway_id && !gateways.has(String(event.gateway_id))) gateways.set(String(event.gateway_id), `已删除网关 · ${event.gateway_id}`); });
+    const signature = JSON.stringify([...gateways]);
+    if (signature === state.eventOptionsRender) return;
+    state.eventOptionsRender = signature;
     select.replaceChildren(new Option('全部网关', ''), ...[...gateways].map(([id, name]) => new Option(name || id, id)));
     select.value = gateways.has(selected) ? selected : '';
   }
 
-  function eventRow(event) {
+  function eventRow(event, gatewayNames) {
     const level = event.level === 'warn' ? 'warning' : event.level;
     const row = node('div', 'event-row');
     const body = node('div', 'event-body');
     const details = node('div', 'event-details');
-    const gateway = state.gateways.find((item) => String(item.id) === String(event.gateway_id));
-    details.append(node('span', '', gateway?.name || (event.gateway_id ? `网关 ${event.gateway_id}` : '系统')), node('time', '', dateText(event.time)));
+    const name = gatewayNames.get(String(event.gateway_id));
+    details.append(node('span', '', name || (event.gateway_id ? `网关 ${event.gateway_id}` : '系统')), node('time', '', dateText(event.time)));
     body.append(node('p', 'event-message', eventMessage(event.message)), details);
     const tone = ['info', 'warning', 'error'].includes(level) ? level : 'info';
     row.append(node('span', `event-marker ${tone}`), body, node('span', 'event-level', { info: '信息', warning: '警告', error: '错误' }[level] || level || '信息'));
@@ -871,14 +1004,24 @@
   }
 
   function renderEvents() {
-    const gateway = $('event-gateway').value;
-    const level = $('event-level').value;
+    if (document.hidden || !['events', 'gateways'].includes(state.view)) return;
     const events = [...state.events].reverse();
-    const filtered = events.filter((event) => (!gateway || String(event.gateway_id) === gateway) && (!level || (event.level === 'warn' ? 'warning' : event.level) === level));
-    if (filtered.length) $('event-list').replaceChildren(...filtered.map(eventRow));
-    else renderEmpty($('event-list'), '暂无匹配的事件', '网关操作后自动记录。');
-    if (events.length) $('recent-events').replaceChildren(...events.slice(0, 3).map(eventRow));
-    else $('recent-events').replaceChildren(node('p', 'muted', '暂无动态'));
+    const names = new Map(state.gateways.map((item) => [String(item.id), item.name]));
+    const draw = (id, rows, cache) => reconcile($(id), rows, cache, (event) => Number(event.id),
+      (event) => JSON.stringify([event, names.get(String(event.gateway_id))]), (event) => eventRow(event, names));
+    if (state.view === 'events') {
+      const gateway = $('event-gateway').value, level = $('event-level').value;
+      const filtered = events.filter((event) => (!gateway || String(event.gateway_id) === gateway) && (!level || (event.level === 'warn' ? 'warning' : event.level) === level));
+      if (filtered.length) draw('event-list', filtered, state.eventRows);
+      else {
+        state.eventRows.clear();
+        if (!$('event-list').querySelector('.empty-state')) renderEmpty($('event-list'), '暂无匹配的事件', '网关操作后自动记录。');
+      }
+    } else if (events.length) draw('recent-events', events.slice(0, 3), state.recentRows);
+    else {
+      state.recentRows.clear();
+      if ($('recent-events').textContent !== '暂无动态') $('recent-events').replaceChildren(node('p', 'muted', '暂无动态'));
+    }
   }
 
   function showView(view) {
@@ -898,7 +1041,9 @@
     $('breadcrumb-current').textContent = title;
     document.title = `${title} · URnetwork`;
     if (view === 'settings') loadSettings();
-    if (view === 'events') loadEvents();
+    if (view === 'gateways') { renderGateways(); renderEvents(); }
+    if (view === 'countries') renderCountries();
+    if (view === 'events') { updateEventGatewayOptions(); renderEvents(); loadEvents(); }
     window.scrollTo({ top: 0, behavior: 'instant' });
   }
 
@@ -991,10 +1136,10 @@
     ['gateway-close', 'gateway-cancel'].forEach((id) => $(id).addEventListener('click', () => { if (!state.savingGateway) $('gateway-dialog').close(); }));
     $('gateway-dialog').addEventListener('cancel', (event) => { if (state.savingGateway) event.preventDefault(); });
     $('gateway-mode').addEventListener('change', syncGatewayMode);
-    $('gateway-country-search').addEventListener('input', () => renderCountryOptions());
-    $('gateway-search').addEventListener('input', renderGateways);
+    $('gateway-country-search').addEventListener('input', () => scheduleRender('country-options', renderCountryOptions));
+    $('gateway-search').addEventListener('input', () => scheduleRender('gateways', renderGateways));
     $('gateway-filter').addEventListener('change', renderGateways);
-    $('country-search').addEventListener('input', renderCountries);
+    $('country-search').addEventListener('input', () => scheduleRender('countries', renderCountries));
     $('country-sort')?.addEventListener('change', renderCountries);
     $('gateway-country-sort')?.addEventListener('change', () => renderCountryOptions());
     $('btn-quick-clean-proxies')?.addEventListener('click', openCleanDialog);
@@ -1028,7 +1173,7 @@
     $('confirm-delete').addEventListener('click', deleteGateway);
     $('copy-close').addEventListener('click', () => $('copy-dialog').close());
     $('settings-form').addEventListener('submit', saveSettings);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden && state.authenticated) { loadGateways(); loadEvents(); } });
+    document.addEventListener('visibilitychange', syncVisible);
   }
 
   // Remove legacy launch secrets without using them to authenticate.

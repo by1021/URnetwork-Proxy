@@ -71,27 +71,27 @@ def check_page(browser, url, *, runtime_failure=False, remote=False, screenshot=
         response = page.goto(url)
         assert response.status == 200
         host = page.evaluate('location.hostname')
-        expect(page.locator('#login-dialog [data-ui-version]')).to_have_text('界面版本 20261031.4')
+        expect(page.locator('#login-dialog [data-ui-version]')).to_have_text('界面版本 20261101.2')
         assert page.evaluate('window.legacyScriptLoaded !== true')
-        assert page.evaluate("performance.getEntriesByType('resource').some(entry => entry.name.endsWith('/app.js?v=20261031.4'))")
-        assert page.evaluate("performance.getEntriesByType('resource').some(entry => entry.name.endsWith('/style.css?v=20261031.4'))")
+        assert page.evaluate("performance.getEntriesByType('resource').some(entry => entry.name.endsWith('/app.js?v=20261101.2'))")
+        assert page.evaluate("performance.getEntriesByType('resource').some(entry => entry.name.endsWith('/style.css?v=20261101.2'))")
         expect(page.locator('#login-dialog [data-access-host]')).to_have_text(host)
         expect(page.locator('#runtime-addresses')).to_have_text(url)
         page.locator('#login-username').fill('admin')
         page.locator('#login-password').fill('admin')
         page.locator('#login-submit').click()
         expect(page.locator('#login-dialog')).not_to_be_visible()
-        expect(page.locator('.page-footer [data-ui-version]')).to_have_text('界面版本 20261031.4')
+        expect(page.locator('.page-footer [data-ui-version]')).to_have_text('界面版本 20261101.2')
         expect(page.locator('.runtime-banner [data-access-host]')).to_have_text(host)
         expect(page.locator('#runtime-addresses')).to_have_text(url)
         expect(page.locator('.gateway-card')).to_have_count(1)
-        for protocol in ('http', 'socks5'):
+        for protocol in ('http', 'https', 'socks5'):
             row = page.locator('.address-row').filter(has=page.locator(f'[data-action="copy-{protocol}"]'))
             expect(row.locator('code')).to_have_text(f'{host}:10801')
             expect(row.locator('code')).to_have_attribute('title', f'{protocol}://{host}:10801')
 
         def check_copy(native=False):
-            for protocol in ('http', 'socks5'):
+            for protocol in ('http', 'https', 'socks5'):
                 expected = f'{protocol}://{host}:10801'
                 page.locator(f'[data-action="copy-{protocol}"]').click()
                 if native:

@@ -140,7 +140,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ac6_validation(self):
         for data in [dict(port=0), dict(port=True), dict(port=65536), dict(port="8080"),
-                     dict(host="0.0.0.0"), dict(host="example.com"),
+                     dict(host="example.com"),
                      dict(host="192.168.1.1", username="user", password="test-fake-password"),
                      dict(mode="country", country_code="JP"), dict(mode="city"),
                      dict(interval=4), dict(interval=3601), dict(interval=float("nan")),

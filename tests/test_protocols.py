@@ -123,17 +123,47 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dual_stack_listener_accepts_v4_and_v6(self):
         # Test that MixedProxyServer binds both IPv4 and IPv6 for public gateway port
-        server = MixedProxyServer("::", 19995, lambda: self.active, timeout=.5)
+        from tests.test_integration import free_port
+        port = free_port()
+        server = MixedProxyServer("::", port, lambda: self.active, timeout=.5)
         await server.start()
         try:
             self.assertEqual(len(server.server.sockets), 2)
             # Connect via IPv4 127.0.0.1
-            r4, w4 = await asyncio.open_connection("127.0.0.1", 19995)
+            r4, w4 = await asyncio.open_connection("127.0.0.1", port)
             w4.close()
             await w4.wait_closed()
             # Connect via IPv6 ::1
-            r6, w6 = await asyncio.open_connection("::1", 19995)
+            r6, w6 = await asyncio.open_connection("::1", port)
             w6.close()
             await w6.wait_closed()
         finally:
             await server.close()
+
+    async def test_https_proxy_same_port_echo(self):
+        import ssl
+        client_ctx = ssl.create_default_context()
+        client_ctx.check_hostname = False
+        client_ctx.verify_mode = ssl.CERT_NONE
+        r, w = await asyncio.open_connection("127.0.0.1", self.relay.port, ssl=client_ctx)
+        try:
+            w.write(b"CONNECT nonexistent.invalid:443 HTTP/1.1\r\nHost: nonexistent.invalid\r\n\r\nping_https")
+            await w.drain()
+            resp = await r.readuntil(b"\r\n\r\n")
+            self.assertIn(b"200", resp)
+            self.assertEqual(await r.readexactly(10), b"ping_https")
+        finally:
+            await close_writer(w)
+
+    async def test_http_strips_tracking_and_privacy_headers(self):
+        req = (b"GET http://nonexistent.invalid/path HTTP/1.1\r\n"
+               b"Host: nonexistent.invalid\r\n"
+               b"X-Forwarded-For: 1.2.3.4\r\n"
+               b"Via: 1.1 proxy.evil.invalid\r\n"
+               b"X-Real-IP: 5.6.7.8\r\n"
+               b"CF-Connecting-IP: 9.10.11.12\r\n\r\n")
+        result = await self.request(req)
+        self.assertIn(b"200 OK", result)
+        head = self.remote.requests[-1][1].lower()
+        for header in ("x-forwarded-for", "via", "x-real-ip", "cf-connecting-ip"):
+            self.assertNotIn(header, head)

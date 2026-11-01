@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import ipaddress
+import ssl
 import struct
 
 
@@ -70,7 +71,7 @@ def authority(host, port):
 
 async def http_connect(reader, writer, host, port, username, password):
     dest = authority(host, port)
-    token = base64.b64encode(('%s:%s' % (username, password)).encode()).decode()
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
     writer.write(('CONNECT %s HTTP/1.1\r\nHost: %s\r\n'
                   'Proxy-Authorization: Basic %s\r\n\r\n' % (dest, dest, token)).encode())
     await writer.drain()
@@ -82,12 +83,27 @@ async def http_connect(reader, writer, host, port, username, password):
 
 
 async def open_tunnel(upstream, host, port, protocol='socks', timeout=20):
-    """The complete connect + handshake has a single deadline, no direct fallback."""
+    """The complete connect + handshake has a single deadline, no direct fallback.
+    Supports 'socks', 'http', and 'https' (TLS-encrypted HTTP CONNECT) upstream."""
+    if protocol not in ('socks', 'http', 'https', 'auto'):
+        raise ProxyError('Unsupported upstream protocol')
+    if protocol == 'https' and not upstream.get('https_port'):
+        raise ProxyError('HTTPS upstream port is missing')
     async def connect():
-        reader, writer = await asyncio.open_connection(
-            upstream['host'], upstream['socks_port' if protocol == 'socks' else 'http_port'], limit=32768)
+        use_https = (protocol == 'https') or (protocol == 'auto' and upstream.get('https_port'))
+        if use_https and upstream.get('https_port'):
+            ssl_ctx = ssl.create_default_context()
+            reader, writer = await asyncio.open_connection(
+                upstream['host'], upstream['https_port'], ssl=ssl_ctx, limit=32768)
+            fn = http_connect
+        else:
+            actual_proto = 'http' if protocol == 'http' else 'socks'
+            target_port = upstream['http_port'] if actual_proto == 'http' else upstream['socks_port']
+            reader, writer = await asyncio.open_connection(
+                upstream['host'], target_port, limit=32768)
+            fn = http_connect if actual_proto == 'http' else socks_connect
+
         try:
-            fn = socks_connect if protocol == 'socks' else http_connect
             await fn(reader, writer, host, port, upstream['auth_token'], upstream.get('password', 'none'))
             return reader, writer
         except BaseException:
