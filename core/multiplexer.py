@@ -24,7 +24,9 @@ class MixedProxyServer:
         self.connections = 0
 
     async def start(self):
-        self.server = await asyncio.start_server(self._accept, self.host, self.port, limit=HEADER_LIMIT)
+        # Dual-stack listener: None binds both IPv4 (0.0.0.0) and IPv6 (::)
+        bind_host = None if (self.port != 0 and self.host in ("::", "[IP]", "[IP]", "", "dual", "all", None)) else self.host
+        self.server = await asyncio.start_server(self._accept, bind_host, self.port, limit=HEADER_LIMIT)
         self.port = self.server.sockets[0].getsockname()[1]
 
     async def close(self):

@@ -1,5 +1,6 @@
 """Real browser + real config API, temporary files and offline upstream fixtures."""
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -25,21 +26,31 @@ def main():
         thread.start()
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(headless=True, executable_path=os.environ.get("CHROMIUM_PATH"))
                 page = browser.new_page(viewport={"width": 1440, "height": 1050})
                 errors = []
                 page.on("pageerror", lambda exc: errors.append(str(exc)))
                 page.on("console", lambda msg: errors.append(msg.text)
                         if msg.type == "error" and "Content Security Policy" in msg.text else None)
-                page.goto(f"http://127.0.0.1:{server.server_port}/#token={app.token}")
+                page.goto(f"http://127.0.0.1:{server.server_port}/")
+                expect(page.locator("#login-dialog")).to_be_visible()
+                expect(page.locator("#login-password")).to_be_enabled()
+                page.locator("#login-username").fill("admin")
+                page.locator("#login-password").fill("admin")
+                page.locator("#login-submit").click()
                 expect(page.locator("#login-dialog")).not_to_be_visible()
                 page.get_by_role("button", name="配置面板", exact=True).click()
                 expect(page.locator("#settings-save")).to_be_enabled()
                 expect(page.locator("#config-api_key")).to_have_value(KEEP_SECRET)
+                expect(page.locator("#config-web_username")).to_have_value("admin")
+                expect(page.locator("#config-web_password")).to_have_value(KEEP_SECRET)
+                expect(page.locator(".config-facts [data-access-host]")).to_have_text("127.0.0.1")
                 expect(page.locator("#web-server-port")).to_have_text(str(server.server_port))
                 assert "fixture-private-existing" not in page.content()
 
                 page.locator("#config-timeout_seconds").fill("25")
+                page.locator("#config-web_username").fill("operator")
+                page.locator("#config-web_password").fill("fixture-console-password")
                 page.locator("#config-web_port").fill("8899")
                 page.locator("#config-default_country").fill("JP")
                 page.locator("#config-default_mode").select_option("country")
@@ -61,6 +72,10 @@ def main():
                 saved = parse_config(path.read_text(encoding="utf-8"))
                 assert saved["timeout_seconds"] == 32 and saved["default_country"] == "DE"
                 assert saved["api_key"] == "fixture-private-existing"
+                assert saved["web_username"] == "operator"
+                assert saved["web_password"] == "fixture-console-password"
+                expect(page.locator("#config-web_password")).to_have_value(KEEP_SECRET)
+                assert "fixture-console-password" not in page.content()
                 assert saved["extension"] == value["extension"] and saved["custom"] == initial["custom"]
                 expect(page.locator("#config-restart")).to_be_visible()
 
@@ -151,7 +166,7 @@ def main():
                 expect(page.locator("#settings-success")).to_contain_text("已保存到")
                 assert parse_config(path.read_text(encoding="utf-8"))["extension"]["serial"] == 9007199254740993
 
-                screenshots = Path(__file__).resolve().parents[1] / "docs" / "assets"
+                screenshots = Path(os.environ.get("SCREENSHOT_DIR", Path(__file__).resolve().parents[1] / "docs" / "assets"))
                 screenshots.mkdir(parents=True, exist_ok=True)
                 page.evaluate("window.scrollTo(0, 0)")
                 page.screenshot(path=str(screenshots / "config-panel.png"), full_page=True)

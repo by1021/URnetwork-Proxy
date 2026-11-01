@@ -84,14 +84,18 @@ def _validate(data: dict[str, Any], base: dict[str, Any] | None = None) -> dict[
             raise ValueError(f"{key} must be a string")
     if not cfg["name"].strip() or len(cfg["name"]) > 128:
         raise ValueError("name must contain 1..128 characters")
-    host = "127.0.0.1" if cfg["host"] == "localhost" else cfg["host"]
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        raise ValueError("host must be a loopback IP address") from None
-    if not address.is_loopback or "%" in host:
-        raise ValueError("host must be a loopback IP address")
-    cfg["host"] = str(address)
+    raw_host = cfg["host"].strip()
+    clean_host = "127.0.0.1" if raw_host == "localhost" else raw_host
+    if clean_host in ("::", "", "dual", "all"):
+        cfg["host"] = "::"
+    else:
+        try:
+            address = ipaddress.ip_address(clean_host)
+        except ValueError:
+            raise ValueError("host must be a valid IP or dual-stack address") from None
+        if not address.is_loopback or "%" in clean_host:
+            raise ValueError("host must be a loopback or dual-stack IP address")
+        cfg["host"] = str(address)
     for key, minimum, maximum in (("port", 1, 65535), ("interval", 5, 3600),
                                   ("failures_before_rotate", 1, 100)):
         if type(cfg[key]) is not int or not minimum <= cfg[key] <= maximum:
@@ -330,10 +334,17 @@ class GatewayManager:
 
     def _reserve(self, config: dict[str, Any], gateway_id: str) -> tuple[str, int]:
         endpoint = (config["host"], config["port"])
-        if any(g.id != gateway_id and (g.config["host"], g.config["port"]) == endpoint
-               for g in self._gateways.values()):
+        port = config["port"]
+        wildcards = ("::", "", "dual", "all")
+        is_wildcard = config["host"] in wildcards
+        if any(g.id != gateway_id and (
+            (g.config["host"], g.config["port"]) == endpoint
+            or (port == g.config["port"] and (is_wildcard or g.config["host"] in wildcards))
+        ) for g in self._gateways.values()):
             raise ValueError("gateway endpoint already configured")
         if self._reservations.get(endpoint, gateway_id) != gateway_id:
+            raise ValueError("gateway endpoint is reserved")
+        if is_wildcard and any(p == port and gid != gateway_id for (h, p), gid in self._reservations.items()):
             raise ValueError("gateway endpoint is reserved")
         self._reservations[endpoint] = gateway_id
         return endpoint

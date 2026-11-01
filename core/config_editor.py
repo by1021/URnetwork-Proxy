@@ -5,7 +5,7 @@ from pathlib import Path
 import threading
 import uuid
 
-from .config import (CREDENTIAL_FIELDS, DEFAULT_CONFIG, KEEP_SECRET, MAX_CONFIG_BYTES,
+from .config import (CREDENTIAL_FIELDS, SECRET_FIELDS, DEFAULT_CONFIG, KEEP_SECRET, MAX_CONFIG_BYTES,
                      ConfigError, parse_config, validate_config)
 from .storage import atomic_json
 
@@ -52,7 +52,7 @@ class ConfigEditor:
 
     @staticmethod
     def redacted(config):
-        return {key: KEEP_SECRET if key in CREDENTIAL_FIELDS and value else value
+        return {key: KEEP_SECRET if key in SECRET_FIELDS and value else value
                 for key, value in config.items()}
 
     def prepare(self, data, current):
@@ -66,7 +66,7 @@ class ConfigEditor:
         if not isinstance(fields, dict) or any(key not in DEFAULT_CONFIG for key in fields):
             raise ConfigError("可视化编辑只接受已知配置字段")
         config.update(fields)
-        for key in CREDENTIAL_FIELDS:
+        for key in SECRET_FIELDS:
             if key not in config and current.get(key):
                 raise ConfigError(f"请保留 {key} 占位符；清除已有凭据须显式设置空字符串")
             if config.get(key) == KEEP_SECRET:

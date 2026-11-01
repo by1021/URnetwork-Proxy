@@ -103,7 +103,11 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_optional_local_auth(self):
         self.relay.username, self.relay.password = "local", "secret"
+        # No credentials -> 407
         self.assertIn(b"407", await self.request(b"GET http://test.invalid/ HTTP/1.1\r\n\r\n"))
+        # Valid credentials (local:secret -> bG9jYWw6c2VjcmV0) -> success 200
+        auth_req = b"GET http://test.invalid/ HTTP/1.1\r\nProxy-Authorization: Basic bG9jYWw6c2VjcmV0\r\n\r\n"
+        self.assertIn(b"200 OK", await self.request(auth_req))
 
     async def test_checker_consumes_variable_reply(self):
         for fn, key in ((checker.test_socks5_proxy, "socks_port"), (checker.test_http_proxy, "http_port")):
@@ -116,3 +120,20 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
         result = await asyncio.to_thread(checker.test_socks5_proxy, "127.0.0.1",
             self.remote.upstream["socks_port"], "wrong-token", timeout=1, target_port=80, use_tls=False)
         self.assertFalse(result[0])
+
+    async def test_dual_stack_listener_accepts_v4_and_v6(self):
+        # Test that MixedProxyServer binds both IPv4 and IPv6 for public gateway port
+        server = MixedProxyServer("::", 19995, lambda: self.active, timeout=.5)
+        await server.start()
+        try:
+            self.assertEqual(len(server.server.sockets), 2)
+            # Connect via IPv4 127.0.0.1
+            r4, w4 = await asyncio.open_connection("127.0.0.1", 19995)
+            w4.close()
+            await w4.wait_closed()
+            # Connect via IPv6 ::1
+            r6, w6 = await asyncio.open_connection("::1", 19995)
+            w6.close()
+            await w6.wait_closed()
+        finally:
+            await server.close()

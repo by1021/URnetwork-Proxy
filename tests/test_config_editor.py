@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from core.config import (ConfigError, DEFAULT_CONFIG, KEEP_SECRET, parse_config,
-                         validate_config)
+                         validate_config, load_config)
 from core.config_editor import ConfigEditor, ConfigConflict
 
 
@@ -37,6 +37,33 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(validate_config({"default_country": "jp"})["default_country"], "JP")
         self.assertEqual(validate_config({"web_port": 65535})["web_port"], 65535)
 
+    def test_management_credentials_require_nonempty_text(self):
+        for key in ("web_username", "web_password"):
+            for value in (None, False, 123, "", "   ", "bad\nvalue", KEEP_SECRET):
+                with self.subTest(key=key, value=value), self.assertRaises(ConfigError):
+                    validate_config({key: value})
+        for key, size in (("web_username", 129), ("web_password", 1025)):
+            with self.assertRaises(ConfigError):
+                validate_config({key: "a" * size})
+        self.assertEqual(validate_config({})["web_password"], "admin")
+
+    def test_strict_load_rejects_broken_files_but_keeps_legacy_cli_fallback(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text('{"web_password":"custom-private"}')
+            with patch("core.config.CONFIG_FILE", path):
+                self.assertEqual(load_config(strict=True)["web_password"], "custom-private")
+                for broken in ('{"web_password":"custom-private"', '{"web_password": null}'):
+                    path.write_text(broken)
+                    with self.assertRaises(ConfigError) as result:
+                        load_config(strict=True)
+                    self.assertNotIn("custom-private", str(result.exception))
+                path.write_text('{"broken":')
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(load_config()["web_password"], "admin")
+
 
 class ConfigEditorTests(unittest.TestCase):
     def setUp(self):
@@ -64,6 +91,20 @@ class ConfigEditorTests(unittest.TestCase):
         self.assertEqual(value["api_key"], "private-original")
         self.assertEqual(value["web_port"], 9000)
         self.assertEqual(value["extension"], {"text": ",}"})
+
+    def test_management_password_redacted_preserved_and_replaced(self):
+        self.config["web_password"] = "private-console-password"
+        self.path.write_text(json.dumps(self.config), encoding="utf-8")
+        data = self.payload()
+        self.assertEqual(data["config"]["web_password"], KEEP_SECRET)
+        self.assertNotIn("private-console-password", json.dumps(data))
+        self.editor.save(self.editor.candidate(data), data["revision"])
+        self.assertEqual(self.editor.read()[0]["web_password"], "private-console-password")
+        data = self.payload()
+        data["config"]["web_password"] = "replacement-password"
+        self.editor.save(self.editor.candidate(data), data["revision"])
+        self.assertEqual(self.editor.read()[0]["web_password"], "replacement-password")
+        self.assertEqual(self.editor.read()[0]["api_key"], "private-original")
 
     def test_form_patches_keep_source_integer_precision(self):
         payload = self.payload()

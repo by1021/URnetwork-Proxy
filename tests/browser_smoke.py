@@ -1,5 +1,6 @@
 """Optional real Chromium UI regression; local fixtures only, no cloud resources."""
 import json
+import os
 import tempfile
 import threading
 from pathlib import Path
@@ -55,15 +56,32 @@ def main():
         thread.start()
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(headless=True, executable_path=os.environ.get("CHROMIUM_PATH"))
                 page = browser.new_page(viewport={"width": 1440, "height": 1100})
                 errors = []
                 page.on("pageerror", lambda exc: errors.append(str(exc)))
                 page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" and "Content Security Policy" in msg.text else None)
-                page.goto(f"http://127.0.0.1:{server.server_port}/#token={app.token}")
+                page.goto(f"http://127.0.0.1:{server.server_port}/#token=obsolete-token")
+                expect(page.locator("#login-dialog")).to_be_visible()
+                expect(page.locator("#login-password")).to_be_enabled()
+                expected_host = "127.0.0.1"
+                expect(page.locator("#login-dialog [data-access-host]")).to_have_text(expected_host)
+                page.locator("#login-password").fill("incorrect")
+                page.locator("#login-submit").click()
+                expect(page.locator("#login-error")).to_have_text("用户名或密码错误")
+                expect(page.locator("#login-password")).to_have_value("")
+                page.locator("#login-username").fill("admin")
+                page.locator("#login-password").fill("admin")
+                page.locator("#login-submit").click()
                 expect(page.locator("#login-dialog")).not_to_be_visible(timeout=10000)
                 expect(page.locator("#stat-countries")).to_have_text("30", timeout=10000)
                 assert "#token" not in page.url
+                expect(page.locator(".runtime-banner [data-access-host]")).to_have_text(expected_host)
+                expect(page.locator("#runtime-addresses")).to_contain_text(f"http://127.0.0.1:{server.server_port}/")
+                assert page.evaluate("localStorage.getItem('password') === null && sessionStorage.length === 0")
+                page.reload()
+                expect(page.locator("#stat-countries")).to_have_text("30", timeout=10000)
+                expect(page.locator("#login-dialog")).not_to_be_visible()
                 for name, code in (("美国 · 工作", "US"), ("日本 · 浏览", "JP")):
                     page.locator("#add-gateway").click()
                     page.locator("#gateway-name").fill(name)
@@ -92,7 +110,7 @@ def main():
                 page.locator("#refresh-countries").click()
                 expect(page.locator("#view-countries [data-country-stale]")).to_contain_text("未过期")
                 page.get_by_role("button", name="网关总览", exact=False).first.click()
-                screenshot = Path(__file__).resolve().parents[1]/"docs"/"assets"/"dashboard.png"
+                screenshot = Path(os.environ.get("SCREENSHOT_DIR", Path(__file__).resolve().parents[1]/"docs"/"assets"))/"dashboard.png"
                 screenshot.parent.mkdir(parents=True, exist_ok=True)
                 expect(page.locator("#toasts .toast")).to_have_count(0, timeout=7000)
                 page.screenshot(path=str(screenshot), full_page=True)
@@ -122,9 +140,16 @@ def main():
                 expect(page.locator("#stat-total")).to_have_text("1", timeout=10000)
                 page.locator("#logout").click()
                 expect(page.locator("#login-dialog")).to_be_visible()
+                expect(page.locator("#login-password")).to_have_value("")
+                page.reload()
+                expect(page.locator("#login-dialog")).to_be_visible()
+                expect(page.locator("#login-password")).to_be_enabled()
+                page.set_viewport_size({"width": 390, "height": 844})
+                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), "Login mobile overflow"
+                page.screenshot(path=str(screenshot.with_name("login-mobile.png")), full_page=True)
                 assert not errors, errors
                 browser.close()
-                print("Browser PASS: login, 30 countries, two country-bound gateways, stale cache, responsive/theme, edit/start/stop/check/rotate/delete, logout; no JS/CSP errors")
+                print("Browser PASS: password login/error/session reload/logout, adaptive access host, 30 countries, two gateways, stale cache, responsive/theme, CRUD; no JS/CSP errors")
         finally:
             server.shutdown()
             thread.join()

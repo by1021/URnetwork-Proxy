@@ -16,7 +16,7 @@ if sys.platform == "win32":
         pass
 
 import argparse
-from core.config import load_config, save_config
+from core.config import ConfigError, load_config, save_config
 from core.client import URClient
 from core.locator import fetch_live_countries, search_cities
 from core.checker import test_tcp_ping, test_full_proxy
@@ -479,12 +479,16 @@ def main():
     parser.add_argument("--list-proxies", action="store_true", help="查看当前网页端 Proxies 列表")
     parser.add_argument("--clean", action="store_true", help="清理所有网页端代理与历史客户端连接")
     parser.add_argument("--web", action="store_true", help="启动本地多网关 Web 管理界面")
+    parser.add_argument("--web-host", type=str, default=None, help="管理界面监听地址，默认 127.0.0.1 (支持 :: 或 0.0.0.0 开启 IPv4/IPv6 双栈监听)")
     parser.add_argument("--web-port", type=int, default=None, help="管理界面端口，默认 8777 (可在 config.json 中配置 web_port)")
     parser.add_argument("--state-dir", help="网关状态目录，默认项目 .local")
     parser.add_argument("--open-browser", action="store_true", help="启动后打开管理界面")
     args = parser.parse_args()
 
-    config = load_config()
+    try:
+        config = load_config(strict=args.web)
+    except ConfigError as exc:
+        parser.error(str(exc))
     if args.web:
         from core.web_server import serve
         port = args.web_port if args.web_port is not None else config.get("web_port", 8777)
@@ -492,7 +496,11 @@ def main():
             port = int(port)
         except (ValueError, TypeError):
             port = 8777
-        serve(config, port=port, state_dir=args.state_dir, open_browser=args.open_browser)
+        host = args.web_host or config.get("web_host", "127.0.0.1")
+        try:
+            serve(config, host=host, port=port, state_dir=args.state_dir, open_browser=args.open_browser)
+        except (ConfigError, ValueError) as exc:
+            parser.error(str(exc))
         return
 
     api_key = args.api_key or config.get("api_key", "").strip()

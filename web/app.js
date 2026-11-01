@@ -2,6 +2,8 @@
 (() => {
   'use strict';
 
+  // Keep the entry URL's version in index.html in sync when releasing UI fixes.
+  const UI_VERSION = '20261031.3';
   const POLL_MS = 5000;
   const ACCOUNT_MS = 60000;
   const COUNTRIES_MS = 300000;
@@ -139,7 +141,7 @@
       }
       if (epoch !== state.epoch) throw Object.assign(new Error('旧会话响应已丢弃'), { name: 'StaleResponse' });
       if (!response.ok) {
-        if (response.status === 401 && state.authenticated) endSession('会话已过期，请重新输入管理令牌。');
+        if (response.status === 401 && state.authenticated) endSession('会话已过期，请重新输入用户名和密码。');
         throw Object.assign(new Error(safeMessage(data.error) || `请求失败（HTTP ${response.status}）`), { status: response.status });
       }
       return data;
@@ -194,7 +196,7 @@
     document.querySelectorAll('dialog[open]').forEach((dialog) => dialog.close());
     ['gateway-list', 'country-list', 'event-list', 'recent-events', 'account-data', 'toasts'].forEach((id) => $(id).replaceChildren());
     document.querySelectorAll('.notice, .field-error').forEach((element) => { element.hidden = true; element.textContent = ''; });
-    ['login-token', 'copy-value', 'gateway-name', 'gateway-search', 'country-search'].forEach((id) => { $(id).value = ''; });
+    ['login-password', 'copy-value', 'gateway-name', 'gateway-search', 'country-search'].forEach((id) => { $(id).value = ''; });
     ['stat-total', 'stat-running', 'stat-countries', 'stat-connections', 'coverage-count', 'current-credential-type', 'api-base-url'].forEach((id) => { $(id).textContent = '—'; });
     document.querySelectorAll('[data-country-source], [data-country-updated]').forEach((element) => { element.textContent = '—'; });
     $('event-gateway').replaceChildren(new Option('全部网关', ''));
@@ -206,34 +208,61 @@
     openLogin(reason);
   }
 
-  async function connect(token, initial = false) {
+  async function loadRuntime() {
+    // The successful browser entry point is authoritative across NAT, TLS and
+    // forwarded ports. Server route IPs are diagnostic, never replacement URLs.
+    const current = new URL(window.location.href);
+    document.querySelectorAll('[data-access-host]').forEach((element) => { element.textContent = current.hostname; });
+    $('runtime-addresses').textContent = `${current.origin}/`;
+    try {
+      const info = await api('/api/runtime');
+      $('runtime-server-ips').textContent = info.ips.join('、');
+      const host = info.web_host.includes(':') ? `[${info.web_host}]` : info.web_host;
+      $('runtime-listen').textContent = `${host}:${info.web_port}`;
+      $('runtime-note').textContent = info.loopback_fallback
+        ? '访问地址跟随浏览器；服务端未检测到非回环地址，诊断 IP 已回退到回环。'
+        : info.loopback_only ? '访问地址跟随浏览器；管理服务仅监听回环，其他设备需经反向代理或隧道访问。'
+          : '访问地址跟随浏览器，保留协议与端口；服务端 IP 仅供诊断，不是代理出口 IP。';
+    } catch (error) {
+      if (!isCancelled(error)) {
+        $('runtime-server-ips').textContent = '获取失败';
+        $('runtime-listen').textContent = '获取失败';
+        $('runtime-note').textContent = `访问地址已按浏览器显示；服务端诊断信息获取失败：${error.message}`;
+      }
+    }
+  }
+
+  async function connect(credentials = null, initial = false) {
     if (state.loggingIn) return;
     state.loggingIn = true;
     $('login-submit').disabled = true;
-    $('login-token').disabled = true;
+    $('login-username').disabled = true;
+    $('login-password').disabled = true;
     $('login-status').textContent = '正在验证会话…';
     message('login-error', '');
     try {
-      if (token) await api('/api/login', 'POST', { token });
-      token = '';
-      $('login-token').value = '';
+      if (credentials) await api('/api/login', 'POST', credentials);
+      credentials = null;
+      $('login-password').value = '';
       const session = await api('/api/session');
       if (typeof session.csrf !== 'string' || !session.csrf) throw new Error('会话缺少校验信息，请重新登录。');
       state.csrf = session.csrf;
       state.authenticated = true;
       $('workspace').inert = false;
       $('login-dialog').close();
+      loadRuntime();
       startPolling();
     } catch (error) {
       if (!isCancelled(error)) openLogin(initial && error.status === 401 ? '' : error.message);
     } finally {
-      token = '';
-      $('login-token').value = '';
+      credentials = null;
+      $('login-password').value = '';
       state.loggingIn = false;
       $('login-submit').disabled = false;
-      $('login-token').disabled = false;
+      $('login-username').disabled = false;
+      $('login-password').disabled = false;
       $('login-status').textContent = '';
-      if ($('login-dialog').open) $('login-token').focus();
+      if ($('login-dialog').open) ($('login-username').value ? $('login-password') : $('login-username')).focus();
     }
   }
 
@@ -365,18 +394,35 @@
 
   function gatewayAddresses(gateway) {
     const container = node('div', 'gateway-addresses');
-    const allowed = ['127.0.0.1', '::1', 'localhost'].includes(gateway.host);
-    if (!allowed) { container.append(node('p', 'notice warning', '非回环监听，请在本地配置中核对地址。')); return container; }
-    const host = gateway.host === '::1' ? '[::1]' : gateway.host;
+    const isDual = ["::", "127.0.0.1", "", "dual", "all"].includes(gateway.host);
+    const allowed = isDual || ['127.0.0.1', '::1', 'localhost'].includes(gateway.host);
+    if (!allowed) { container.append(node('p', 'notice warning', '非标准监听，请在本地配置中核对地址。')); return container; }
+    // Copy the browser-facing host, not the server's bind address or web port.
+    // URL.hostname already brackets IPv6 literals.
+    const host = window.location.hostname;
+    const bindHost = gateway.host === '::1' ? '[::1]' : gateway.host;
+    const hasAuth = Boolean(gateway.username && gateway.password);
+    const authPrefix = hasAuth ? `${gateway.username}:${gateway.password}@` : '';
     for (const [label, protocol] of [['HTTP', 'http'], ['SOCKS5', 'socks5']]) {
-      const address = `${protocol}://${host}:${gateway.port}`;
+      const address = `${protocol}://${authPrefix}${host}:${gateway.port}`;
       const row = node('div', 'address-row');
-      const code = node('code', '', `${host}:${gateway.port}`); code.title = address;
+      const code = node('code', '', `${authPrefix}${host}:${gateway.port}`); code.title = address;
       const button = node('button', 'copy-button', '复制'); button.type = 'button';
       button.dataset.action = `copy-${protocol}`;
       button.setAttribute('aria-label', `复制 ${gateway.name} 的 ${label} 地址`);
       button.addEventListener('click', () => copyAddress(address));
       row.append(node('span', 'address-kind', label), code, button); container.append(row);
+    }
+    if (hasAuth) {
+      container.append(node('p', 'field-hint', `已配置访问验证：用户名 ${gateway.username}，代理连接需携带凭据。`));
+    }
+    if (isDual && gateway.host === '::') {
+      container.append(node('p', 'field-hint', `实际监听：IPv4 / IPv6 双栈全接口（公网已开放），端口 ${gateway.port}。复制地址跟随当前访问主机。`));
+    } else {
+      container.append(node('p', 'field-hint', `实际监听：${bindHost}:${gateway.port}（服务器回环）。复制地址跟随当前访问主机。`));
+      if (host !== bindHost) {
+        container.append(node('p', 'field-hint', '复制地址连通性未验证；请确保访问主机上的该网关端口已转发至实际监听地址，管理端口转发不包含代理端口。'));
+      }
     }
     return container;
   }
@@ -524,10 +570,12 @@
     $('gateway-dialog-heading').textContent = gateway ? '编辑网关' : '新建网关';
     $('gateway-save').textContent = gateway ? '保存更改' : '创建并启动';
     $('gateway-name').value = gateway?.name || '';
-    $('gateway-host').value = gateway?.host === '::1' ? '::1' : '127.0.0.1';
+    if ($('gateway-host')) $('gateway-host').value = gateway?.host || '::';
     const used = new Set(state.gateways.map((item) => Number(item.port)));
     let port = 1080; while (used.has(port) && port < 65535) port += 1;
     $('gateway-port').value = gateway?.port ?? port;
+    if ($('gateway-username')) $('gateway-username').value = gateway?.username || '';
+    if ($('gateway-password')) $('gateway-password').value = gateway?.password || '';
     $('gateway-mode').value = gateway?.mode || 'country';
     $('gateway-auto-heal').checked = gateway?.auto_heal ?? true;
     $('gateway-interval').value = gateway?.interval ?? 30;
@@ -557,8 +605,12 @@
     if (!$('gateway-form').reportValidity()) return null;
     const name = $('gateway-name').value.trim();
     if (!name) throw new Error('请填写网关名称。');
-    const host = $('gateway-host').value;
-    if (!['127.0.0.1', '::1'].includes(host)) throw new Error('本期仅支持回环监听地址。');
+    const host = $('gateway-host')?.value || '::';
+    const username = $('gateway-username')?.value.trim() || '';
+    const password = $('gateway-password')?.value || '';
+    if (Boolean(username) !== Boolean(password)) {
+      throw new Error('代理用户名与密码必须同时提供，或同时留空。');
+    }
     const interval = Number($('gateway-interval').value);
     const failures = Number($('gateway-failures').value);
     if (!Number.isInteger(interval) || interval < 5 || interval > 3600) throw new Error('检查间隔必须是 5–3600 秒的整数。');
@@ -571,7 +623,7 @@
       if (!country && selected && selected === String(state.editing?.location_id)) country = { code: state.editing.country_code, location_id: state.editing.location_id };
       if (!country || !selected) { message('country-picker-error', '请选择国家 / 地区；若列表为空，请刷新位置数据。'); $('gateway-country').focus(); return null; }
     }
-    return { name, host, port, mode, country_code: country?.code || '', location_id: country?.location_id || '', auto_heal: $('gateway-auto-heal').checked, interval, failures_before_rotate: failures, enabled: state.editing?.enabled ?? true };
+    return { name, host, port, mode, country_code: country?.code || '', location_id: country?.location_id || '', auto_heal: $('gateway-auto-heal').checked, interval, failures_before_rotate: failures, enabled: state.editing?.enabled ?? true, username, password };
   }
 
   async function saveGateway(event) {
@@ -929,7 +981,10 @@
   function bindEvents() {
     document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => showView(button.dataset.view)));
     document.querySelector('.brand').addEventListener('click', (event) => { event.preventDefault(); showView('gateways'); });
-    $('login-form').addEventListener('submit', (event) => { event.preventDefault(); const token = $('login-token').value.trim(); if (token) connect(token); });
+    $('login-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      if ($('login-form').reportValidity()) connect({ username: $('login-username').value, password: $('login-password').value });
+    });
     $('login-dialog').addEventListener('cancel', (event) => event.preventDefault());
     $('logout').addEventListener('click', logout);
     $('add-gateway').addEventListener('click', () => openGateway());
@@ -977,12 +1032,11 @@
     document.addEventListener('visibilitychange', () => { if (!document.hidden && state.authenticated) { loadGateways(); loadEvents(); } });
   }
 
-  // Consume and remove the launch secret before any network request.
+  // Remove legacy launch secrets without using them to authenticate.
   const fragment = new URLSearchParams(window.location.hash.slice(1));
-  let launchToken = fragment.get('token');
   if (fragment.has('token')) history.replaceState(history.state, '', window.location.pathname + window.location.search);
-  fragment.delete('token');
   initTheme(); bindEvents(); openLogin();
-  connect(launchToken, !launchToken);
-  launchToken = null;
+  document.querySelectorAll('[data-ui-version]').forEach((element) => { element.textContent = `界面版本 ${UI_VERSION}`; });
+  loadRuntime();
+  connect(null, true);
 })();

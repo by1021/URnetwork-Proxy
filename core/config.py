@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ipaddress
 import json
 import re
 from pathlib import Path
@@ -21,10 +22,15 @@ DEFAULT_CONFIG = {
     "default_mode": "best",
     "default_country": "US",
     "timeout_seconds": 15,
-    "web_port": 8777
+    "web_host": "127.0.0.1",
+    "web_port": 8777,
+    "web_username": "admin",
+    "web_password": "admin",
+    "allowed_hosts": []
 }
 
 CREDENTIAL_FIELDS = ("api_key", "jwt_token", "seedphrase", "auth_code", "email", "password")
+SECRET_FIELDS = (*CREDENTIAL_FIELDS, "web_password")
 KEEP_SECRET = "__KEEP_EXISTING__"
 MAX_CONFIG_BYTES = 65536
 
@@ -66,6 +72,11 @@ def validate_config(cfg):
     for key in CREDENTIAL_FIELDS:
         if not isinstance(result[key], str) or len(result[key]) > 8192:
             raise ConfigError(f"{key} 须为不超过 8192 字符的文本")
+    for key, maximum in (("web_username", 128), ("web_password", 1024)):
+        value = result[key]
+        if (not isinstance(value, str) or not value.strip() or len(value) > maximum
+                or value == KEEP_SECRET or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+            raise ConfigError(f"{key} 须为 1–{maximum} 字符的非空文本，不含控制字符")
     for key in ("api_base_url", "ur_base_url"):
         value = result[key]
         try:
@@ -78,6 +89,24 @@ def validate_config(cfg):
                 raise ValueError
         except ValueError:
             raise ConfigError(f"{key} 须为完整 HTTP(S) 地址，不含凭据、查询参数或片段") from None
+    web_host = result.get("web_host", "127.0.0.1")
+    if not isinstance(web_host, str) or not web_host.strip():
+        raise ConfigError("web_host 须为 IP 地址文本（如 127.0.0.1、0.0.0.0 或 ::）")
+    web_host = web_host.strip()
+    clean_host = web_host.strip("[]")
+    if clean_host not in ("localhost", "dual", "all"):
+        try:
+            ipaddress.ip_address(clean_host)
+        except ValueError:
+            raise ConfigError("web_host 须为有效 IP 地址（如 127.0.0.1、0.0.0.0、::）或 localhost")
+    result["web_host"] = web_host
+
+    allowed_hosts = result.get("allowed_hosts", [])
+    if allowed_hosts is not None:
+        if not isinstance(allowed_hosts, list) or not all(isinstance(h, str) for h in allowed_hosts):
+            raise ConfigError("allowed_hosts 须为字符串数组")
+    result["allowed_hosts"] = allowed_hosts
+
     for key, minimum, maximum in (("timeout_seconds", 1, 300), ("web_port", 1, 65535)):
         if type(result[key]) is not int or not minimum <= result[key] <= maximum:
             raise ConfigError(f"{key} 须为 {minimum}–{maximum} 之间的整数")
@@ -146,7 +175,7 @@ def _strip_json_comments(text: str) -> str:
                 chars[index] = " "
     return "".join(chars)
 
-def load_config():
+def load_config(*, strict=False):
     """加载配置文件，若 config.json 不存在则尝试从 config.example.json 回退，支持 JSONC 注释"""
     target = CONFIG_FILE
     if not target.exists():
@@ -161,8 +190,10 @@ def load_config():
             cfg = parse_config(raw_text)
             merged = DEFAULT_CONFIG.copy()
             merged.update(cfg)
-            return merged
+            return validate_config(merged) if strict else merged
     except Exception as e:
+        if strict:
+            raise ConfigError("管理配置读取或校验失败，请修复 config.json 后重新启动；未启用默认账号") from None
         print(f"[!] 读取配置文件失败: {e}，使用默认配置。")
         return DEFAULT_CONFIG.copy()
 

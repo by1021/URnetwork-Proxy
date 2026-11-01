@@ -651,5 +651,16 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(self.probe.await_count, calls)
 
 
+    async def test_dual_stack_gateway_creation_and_reservation(self):
+        # Dual-stack host normalization (::, empty, dual)
+        gw1 = await self.manager.create_gateway(dict(name="Dual1", host="::", port=19090, enabled=False))
+        self.assertEqual(gw1["host"], "::")
+        # Same port on wildcard or loopback collides
+        with self.assertRaises(ValueError):
+            await self.manager.create_gateway(dict(name="Dual2", host="::", port=19090, enabled=False))
+        with self.assertRaises(ValueError):
+            await self.manager.create_gateway(dict(name="Loop", host="127.0.0.1", port=19090, enabled=False))
+
+
 if __name__ == "__main__":
     unittest.main()
