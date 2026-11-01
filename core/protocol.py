@@ -81,7 +81,7 @@ async def http_connect(reader, writer, host, port, username, password):
         raise ProxyError('Upstream HTTP CONNECT rejected')
 
 
-async def open_tunnel(upstream, host, port, protocol='socks', timeout=12):
+async def open_tunnel(upstream, host, port, protocol='socks', timeout=20):
     """The complete connect + handshake has a single deadline, no direct fallback."""
     async def connect():
         reader, writer = await asyncio.open_connection(

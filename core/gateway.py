@@ -393,11 +393,19 @@ class GatewayManager:
 
     def _make_relay(self, g: _Gateway, cfg: dict[str, Any]) -> Any:
         # A pre-bound replacement must not publish the old country's upstream.
-        relay = self._relay_factory(cfg["host"], cfg["port"],
-                                   lambda: g.upstream if g.relay is relay else None,
-                                   username=cfg.get("username", ""),
-                                   password=cfg.get("password", ""),
-                                   on_result=lambda ok: self._on_result(g, ok))
+        try:
+            relay = self._relay_factory(cfg["host"], cfg["port"],
+                                       lambda: g.upstream if g.relay is relay else None,
+                                       username=cfg.get("username", ""),
+                                       password=cfg.get("password", ""),
+                                       timeout=25,
+                                       on_result=lambda ok: self._on_result(g, ok))
+        except TypeError:
+            relay = self._relay_factory(cfg["host"], cfg["port"],
+                                       lambda: g.upstream if g.relay is relay else None,
+                                       username=cfg.get("username", ""),
+                                       password=cfg.get("password", ""),
+                                       on_result=lambda ok: self._on_result(g, ok))
         return relay
 
     async def _bind(self, g: _Gateway, cfg: dict[str, Any]) -> Any:
@@ -495,9 +503,18 @@ class GatewayManager:
             g.creates.append(self._clock())
             self._inflight_creates += 1
             try:
-                upstream = await asyncio.to_thread(self.client.create_proxy, mode=cfg["mode"],
-                                                   target=cfg["country_code"],
-                                                   location_id=cfg["location_id"])
+                def _do_create():
+                    try:
+                        return self.client.create_proxy(mode=cfg["mode"],
+                                                        target=cfg["country_code"],
+                                                        location_id=cfg["location_id"],
+                                                        gateway_name=cfg.get("name", ""),
+                                                        gateway_id=g.id)
+                    except TypeError:
+                        return self.client.create_proxy(mode=cfg["mode"],
+                                                        target=cfg["country_code"],
+                                                        location_id=cfg["location_id"])
+                upstream = await asyncio.to_thread(_do_create)
             except Exception as exc:
                 self._global_attempts += 1
                 self._global_next_create = self._clock() + _delay(self._global_attempts)

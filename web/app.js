@@ -3,7 +3,7 @@
   'use strict';
 
   // Keep the entry URL's version in index.html in sync when releasing UI fixes.
-  const UI_VERSION = '20261031.3';
+  const UI_VERSION = '20261031.4';
   const POLL_MS = 5000;
   const ACCOUNT_MS = 60000;
   const COUNTRIES_MS = 300000;
@@ -220,14 +220,14 @@
       const host = info.web_host.includes(':') ? `[${info.web_host}]` : info.web_host;
       $('runtime-listen').textContent = `${host}:${info.web_port}`;
       $('runtime-note').textContent = info.loopback_fallback
-        ? '访问地址跟随浏览器；服务端未检测到非回环地址，诊断 IP 已回退到回环。'
-        : info.loopback_only ? '访问地址跟随浏览器；管理服务仅监听回环，其他设备需经反向代理或隧道访问。'
-          : '访问地址跟随浏览器，保留协议与端口；服务端 IP 仅供诊断，不是代理出口 IP。';
+        ? '诊断 IP 已回退至回环地址。'
+        : info.loopback_only ? '仅监听回环；远程访问需反向代理或隧道。'
+          : '诊断 IP 不是代理出口；访问地址以浏览器为准。';
     } catch (error) {
       if (!isCancelled(error)) {
         $('runtime-server-ips').textContent = '获取失败';
         $('runtime-listen').textContent = '获取失败';
-        $('runtime-note').textContent = `访问地址已按浏览器显示；服务端诊断信息获取失败：${error.message}`;
+        $('runtime-note').textContent = `诊断信息获取失败：${error.message}`;
       }
     }
   }
@@ -281,11 +281,11 @@
       try {
         const data = await api('/api/health');
         if (data.status !== 'ok') throw new Error('服务状态异常');
-        $('health-state').textContent = '本地服务在线';
+        $('health-state').textContent = '服务在线';
         $('health-state').className = 'health-state online';
       } catch (error) {
         if (!isCancelled(error)) {
-          $('health-state').textContent = '本地服务未连接';
+          $('health-state').textContent = '服务离线';
           $('health-state').className = 'health-state offline';
         }
       }
@@ -305,8 +305,8 @@
       } catch (error) {
         state.gatewaysReady = false;
         updateCredentialLock();
-        $('gateway-sync').textContent = '同步失败 · 保留上次数据，5 秒后重试';
-        if (!state.gateways.length) renderEmpty($('gateway-list'), '暂未取得网关', '请确认本地服务在线，使用上方刷新重试。');
+        $('gateway-sync').textContent = '同步失败，5 秒后重试';
+        if (!state.gateways.length) renderEmpty($('gateway-list'), '暂未取得网关', '请检查服务后刷新。');
         throw error;
       } finally { $('gateway-list').setAttribute('aria-busy', 'false'); }
     });
@@ -316,7 +316,7 @@
     const empty = node('div', 'empty-state');
     empty.append(node('div', 'empty-symbol', '◇'), node('h3', '', title), node('p', '', description));
     if (action) {
-      const button = node('button', 'button primary', '新建第一个网关');
+      const button = node('button', 'button primary', '新建网关');
       button.type = 'button'; button.addEventListener('click', () => openGateway()); empty.append(button);
     }
     container.replaceChildren(empty);
@@ -340,7 +340,6 @@
     const running = state.gateways.filter((gateway) => gateway.enabled && gatewayStatus(gateway)[1] === 'good').length;
     $('stat-total').textContent = state.gateways.length;
     $('stat-running').textContent = running;
-    $('stat-running-note').textContent = running ? '网关运行正常' : '暂无运行中的网关';
     $('stat-connections').textContent = amount(state.gateways.reduce((sum, gateway) => sum + (number(gateway.connections) || 0), 0));
     $('gateway-count').textContent = gateways.length;
     $('nav-gateway-count').textContent = state.gateways.length;
@@ -348,7 +347,7 @@
     if (signature === state.gatewayRender) return;
     state.gatewayRender = signature;
     if (!gateways.length) {
-      renderEmpty($('gateway-list'), state.gateways.length ? '没有匹配的网关' : '从第一条连接开始', state.gateways.length ? '试试其他名称、国家、端口或状态筛选。' : '选择一个国家，为你的应用创建固定本地代理入口。', !state.gateways.length);
+      renderEmpty($('gateway-list'), state.gateways.length ? '没有匹配的网关' : '暂无网关', state.gateways.length ? '试试其他关键词或状态。' : '新建网关后即可使用代理。', !state.gateways.length);
       return;
     }
     const focused = document.activeElement;
@@ -369,7 +368,7 @@
     const header = node('div', 'gateway-card-head');
     const identity = node('div', 'gateway-identity');
     const title = node('h3', '', gateway.name || '未命名网关'); title.title = gateway.name || '未命名网关';
-    identity.append(title, node('p', '', gateway.mode === 'best' ? '自动选择 · 最佳节点' : `${regionName(gateway.country_code)} · 国家绑定`));
+    identity.append(title, node('p', '', gateway.mode === 'best' ? '自动选择' : regionName(gateway.country_code)));
     const [label, tone] = gatewayStatus(gateway);
     const badge = node('span', `badge ${tone}`); badge.append(node('span', 'badge-dot'), document.createTextNode(label));
     header.append(node('span', `country-emblem${gateway.mode === 'best' ? ' auto' : ''}`, gateway.mode === 'best' ? '◎' : gateway.country_code || '—'), identity, badge);
@@ -379,7 +378,7 @@
     card.append(meta, node('p', 'gateway-last-check', `上次检查 ${dateText(gateway.last_check)}`));
     const error = eventMessage(state.errors.get(String(gateway.id)) || gateway.last_error);
     if (error) card.append(node('p', 'notice error', error));
-    if (busy) card.append(node('p', 'field-hint', '正在执行操作，请稍候…'));
+    if (busy) card.append(node('p', 'field-hint', '处理中…'));
     card.append(gatewayActions(gateway, busy));
     return card;
   }
@@ -414,14 +413,14 @@
       row.append(node('span', 'address-kind', label), code, button); container.append(row);
     }
     if (hasAuth) {
-      container.append(node('p', 'field-hint', `已配置访问验证：用户名 ${gateway.username}，代理连接需携带凭据。`));
+      container.append(node('p', 'field-hint', '已启用代理认证'));
     }
     if (isDual && gateway.host === '::') {
-      container.append(node('p', 'field-hint', `实际监听：IPv4 / IPv6 双栈全接口（公网已开放），端口 ${gateway.port}。复制地址跟随当前访问主机。`));
+      container.append(node('p', 'field-hint', `双栈全接口${hasAuth ? '' : ' · 未设置代理密码'}`));
     } else {
-      container.append(node('p', 'field-hint', `实际监听：${bindHost}:${gateway.port}（服务器回环）。复制地址跟随当前访问主机。`));
+      container.append(node('p', 'field-hint', `实际监听：${bindHost}:${gateway.port}（回环）`));
       if (host !== bindHost) {
-        container.append(node('p', 'field-hint', '复制地址连通性未验证；请确保访问主机上的该网关端口已转发至实际监听地址，管理端口转发不包含代理端口。'));
+        container.append(node('p', 'field-hint', '连通性未验证；代理端口需单独转发。'));
       }
     }
     return container;
@@ -480,8 +479,8 @@
     return loadSection('countries', 'refresh-countries', 'countries-error', async () => {
       try { acceptCountries(await api('/api/countries')); }
       catch (error) {
-        document.querySelectorAll('[data-country-stale]').forEach((element) => { element.hidden = false; element.textContent = '位置数据同步失败；已有快照仅供参考'; });
-        if (!state.countryData) renderEmpty($('country-list'), '位置数据暂不可用', '请刷新重试；已创建的网关不受影响。');
+        document.querySelectorAll('[data-country-stale]').forEach((element) => { element.hidden = false; element.textContent = '同步失败，显示上次数据'; });
+        if (!state.countryData) renderEmpty($('country-list'), '位置数据暂不可用', '请刷新重试，已有网关不受影响。');
         if ($('gateway-dialog').open) message('country-picker-error', error.message);
         throw error;
       } finally { $('country-list').setAttribute('aria-busy', 'false'); }
@@ -515,7 +514,7 @@
     document.querySelectorAll('[data-country-source]').forEach((element) => { element.textContent = data.source || '未提供来源'; });
     document.querySelectorAll('[data-country-updated]').forEach((element) => { element.textContent = data.updated_at ? dateText(data.updated_at) : '未提供更新时间'; });
     document.querySelectorAll('[data-country-stale]').forEach((element) => {
-      element.hidden = false;
+      element.hidden = !data.stale && !data.error;
       element.className = `notice ${data.stale || data.error ? 'warning' : 'positive'}`;
       element.textContent = data.stale ? '缓存已过期 · 请刷新核对' : data.error ? '刷新失败 · 当前为缓存快照' : '数据快照未过期';
     });
@@ -529,14 +528,14 @@
     const sourceList = state.rawCountries ? [...state.rawCountries] : [...state.countries];
     state.countries = sortCountries(sourceList, sortVal);
     const countries = state.countries.filter((country) => countryMatches(country, $('country-search').value));
-    $('country-result-count').textContent = `显示 ${countries.length} / ${state.countries.length} 个国家与地区`;
-    if (!countries.length) { renderEmpty($('country-list'), state.countries.length ? '没有匹配的国家' : '当前没有可用国家', '试试英文名称或国家代码，也可以刷新位置数据。'); return; }
+    $('country-result-count').textContent = `${countries.length} / ${state.countries.length} 个地区`;
+    if (!countries.length) { renderEmpty($('country-list'), state.countries.length ? '没有匹配的国家' : '当前没有可用国家', '试试其他名称或国家代码。'); return; }
     $('country-list').replaceChildren(...countries.map((country) => {
       const card = node('article', 'country-card');
       const heading = node('div', 'country-card-head');
       const name = node('div'); name.append(node('h3', '', countryName(country)), node('p', '', country.name || regionName(country.code, 'en')));
       heading.append(node('span', 'country-emblem', country.code), name);
-      const providers = node('div', 'country-provider-count'); providers.append(node('span', '', '提供者'), node('strong', '', amount(country.providers)));
+      const providers = node('div', 'country-provider-count'); providers.append(node('span', '', '节点数'), node('strong', '', amount(country.providers)));
       const flags = node('div', 'country-flags');
       if (country.stable) flags.append(node('span', 'badge good', '稳定位置'));
       if (country.strong_privacy) flags.append(node('span', 'badge blue', '强隐私'));
@@ -550,15 +549,15 @@
     let countries = state.rawCountries ? [...state.rawCountries] : [...state.countries];
     countries = sortCountries(countries, sortVal);
     countries = countries.filter((country) => countryMatches(country, $('gateway-country-search').value));
-    const options = countries.map((country) => new Option(`${countryName(country)} · ${country.name || regionName(country.code, 'en')} (${country.code}) · ${amount(country.providers)} 提供者`, String(country.location_id)));
+    const options = countries.map((country) => new Option(`${countryName(country)} (${country.code}) · ${amount(country.providers)} 节点`, String(country.location_id)));
     const current = state.editing;
     if (current?.mode === 'country' && current.location_id && !state.countries.some((country) => String(country.location_id) === String(current.location_id)) && !$('gateway-country-search').value) {
-      options.push(new Option(`${regionName(current.country_code)} (${current.country_code}) · 已保存绑定，当前快照未包含`, String(current.location_id)));
+      options.push(new Option(`${regionName(current.country_code)} (${current.country_code}) · 已保存，暂不可用`, String(current.location_id)));
     }
     $('gateway-country').replaceChildren(new Option('请选择国家 / 地区', ''), ...options);
     $('gateway-country').value = options.some((option) => option.value === String(selected)) ? String(selected) : '';
     const data = state.countryData;
-    $('country-picker-note').textContent = data ? `显示 ${countries.length} / ${state.countries.length} · ${data.source || '来源未提供'} · ${dateText(data.updated_at)}${data.stale ? ' · 缓存已过期' : ''}` : '位置数据尚未就绪；请稍候或刷新位置数据。';
+    $('country-picker-note').textContent = data ? `${countries.length} 个匹配地区${data.stale ? ' · 缓存已过期' : ''}` : '正在获取地区，请稍候。';
     message('country-picker-error', data?.error ? safeMessage(data.error) : '');
   }
 
@@ -685,7 +684,7 @@
   function loadAccount() {
     return loadSection('account', 'refresh-account', 'account-error', async () => {
       try { renderAccount(await api('/api/account')); message('account-error', ''); }
-      catch (error) { $('account-data').replaceChildren(node('p', 'muted', '配额暂不可用，不影响本地网关操作。')); throw error; }
+      catch (error) { $('account-data').replaceChildren(node('p', 'muted', '配额暂不可用')); throw error; }
       finally { $('account-data').setAttribute('aria-busy', 'false'); }
     });
   }
@@ -749,7 +748,7 @@
     $('api-base-url').textContent = data.config.api_base_url;
     $('web-server-port').textContent = String(data.active_port);
     $('config-saved-port').textContent = String(data.config.web_port);
-    message('config-restart', data.restart_required ? '文件配置已更新，重启服务后生效；当前连接仍使用启动时的配置。' : '', 'warning');
+    message('config-restart', data.restart_required ? '配置已更新，重启生效；当前连接不变。' : '', 'warning');
     message('config-legacy', data.legacy_credentials ? '检测到旧版独立凭据：本次保存会迁入 config.json，并在 .local 中保留原凭据备份。' : '', 'warning');
     updateCredentialLock();
   }
@@ -771,7 +770,7 @@
     $('settings-fields').disabled = locked;
     ['settings-save', 'config-tab-form', 'config-tab-source', 'config-discard'].forEach((id) => { $(id).disabled = locked; });
     $('refresh-settings').disabled = state.savingSettings || state.configLoading;
-    $('credential-lock').textContent = state.gateways.length ? `当前有 ${state.gateways.length} 个网关：可保存一般参数；变更认证或 API 地址前，请删除网关并等待资源回收。` : '变更认证或 API 地址时，服务端会检查旧代理资源是否回收完成。';
+    $('credential-lock').textContent = state.gateways.length ? `当前 ${state.gateways.length} 个网关；更换认证或 API 前需删除并完成回收。` : '更换认证或 API 前需完成旧代理回收。';
     $('config-dirty').textContent = state.savingSettings ? '正在处理…' : state.configLoading ? '正在读取…' : !state.settingsReady ? '等待读取' : state.configDirty ? '有未保存修改' : '已与文件同步';
     $('config-dirty').className = `badge ${state.configDirty ? 'warning' : state.settingsReady ? 'good' : 'neutral'}`;
   }
@@ -819,7 +818,7 @@
     try {
       const result = await api('/api/config', 'PUT', payload);
       acceptConfiguration(result);
-      message('settings-success', '已保存到 config.json。配置在重启后生效，当前连接未中断。', 'positive');
+      message('settings-success', '已保存到 config.json，重启生效；当前连接不中断。', 'positive');
     } catch (error) {
       if (!isCancelled(error) && state.authenticated) message('settings-error', error.message);
     } finally {
@@ -877,9 +876,9 @@
     const events = [...state.events].reverse();
     const filtered = events.filter((event) => (!gateway || String(event.gateway_id) === gateway) && (!level || (event.level === 'warn' ? 'warning' : event.level) === level));
     if (filtered.length) $('event-list').replaceChildren(...filtered.map(eventRow));
-    else renderEmpty($('event-list'), '暂无匹配的事件', '网关启动、检查和换线后，事件会自动显示在这里。');
+    else renderEmpty($('event-list'), '暂无匹配的事件', '网关操作后自动记录。');
     if (events.length) $('recent-events').replaceChildren(...events.slice(0, 3).map(eventRow));
-    else $('recent-events').replaceChildren(node('p', 'muted', '暂无动态。创建网关后，连接事件会出现在这里。'));
+    else $('recent-events').replaceChildren(node('p', 'muted', '暂无动态'));
   }
 
   function showView(view) {
@@ -940,7 +939,7 @@
 
     if (confirmBtn) {
       confirmBtn.disabled = true;
-      confirmBtn.textContent = '正在深度清理…';
+      confirmBtn.textContent = '清理中…';
     }
     if (cancelBtn) cancelBtn.disabled = true;
     if (quickBtn) quickBtn.disabled = true;
@@ -950,12 +949,12 @@
       const res = await api('/api/proxies/clean', 'POST', {});
       $('clean-confirm-dialog').close();
       const count = res.proxies_removed ?? 0;
-      const resetText = res.clients_reset ? '客户端连接已重置' : '未变动';
-      toast(`深度清理完成！已移除 ${count} 个代理实例，${resetText}`);
+      const resetText = res.clients_reset ? '客户端已重置' : '客户端未重置';
+      toast(`已清理 ${count} 个代理；${resetText}`);
       if ($('clean-status')) {
         $('clean-status').hidden = false;
         $('clean-status').className = 'notice positive';
-        $('clean-status').textContent = `清理成功！已从 https://ur.io 网页端删除 ${count} 个代理实例，客户端会话计数重置: ${resetText}。刷新网页 Proxies 列表已清空。`;
+        $('clean-status').textContent = `已清理 ${count} 个代理；${resetText}。`;
       }
       loadAccount().catch(() => {});
       loadGateways().catch(() => {});
@@ -970,7 +969,7 @@
     } finally {
       if (confirmBtn) {
         confirmBtn.disabled = false;
-        confirmBtn.textContent = '确认清空并重置';
+        confirmBtn.textContent = '确认清理';
       }
       if (cancelBtn) cancelBtn.disabled = false;
       if (quickBtn) quickBtn.disabled = false;

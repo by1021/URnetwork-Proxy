@@ -63,22 +63,25 @@ def check_page(browser, url, *, runtime_failure=False, remote=False, screenshot=
         # Simulate a stale intermediary response on the legacy unversioned URL.
         page.route('**/app.js', lambda route: route.fulfill(
             content_type='text/javascript', body='window.legacyScriptLoaded = true;'))
+        page.route('**/style.css', lambda route: route.fulfill(
+            content_type='text/css', body='body { display: none; }'))
         if runtime_failure:
             page.route('**/api/runtime', lambda route: route.fulfill(
                 status=503, content_type='application/json', body='{"error":"fixture runtime offline"}'))
         response = page.goto(url)
         assert response.status == 200
         host = page.evaluate('location.hostname')
-        expect(page.locator('#login-dialog [data-ui-version]')).to_have_text('界面版本 20261031.3')
+        expect(page.locator('#login-dialog [data-ui-version]')).to_have_text('界面版本 20261031.4')
         assert page.evaluate('window.legacyScriptLoaded !== true')
-        assert page.evaluate("performance.getEntriesByType('resource').some(entry => entry.name.endsWith('/app.js?v=20261031.3'))")
+        assert page.evaluate("performance.getEntriesByType('resource').some(entry => entry.name.endsWith('/app.js?v=20261031.4'))")
+        assert page.evaluate("performance.getEntriesByType('resource').some(entry => entry.name.endsWith('/style.css?v=20261031.4'))")
         expect(page.locator('#login-dialog [data-access-host]')).to_have_text(host)
         expect(page.locator('#runtime-addresses')).to_have_text(url)
         page.locator('#login-username').fill('admin')
         page.locator('#login-password').fill('admin')
         page.locator('#login-submit').click()
         expect(page.locator('#login-dialog')).not_to_be_visible()
-        expect(page.locator('.page-footer [data-ui-version]')).to_have_text('界面版本 20261031.3')
+        expect(page.locator('.page-footer [data-ui-version]')).to_have_text('界面版本 20261031.4')
         expect(page.locator('.runtime-banner [data-access-host]')).to_have_text(host)
         expect(page.locator('#runtime-addresses')).to_have_text(url)
         expect(page.locator('.gateway-card')).to_have_count(1)

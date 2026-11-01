@@ -75,6 +75,22 @@ def main():
                 page.locator("#login-submit").click()
                 expect(page.locator("#login-dialog")).not_to_be_visible(timeout=10000)
                 expect(page.locator("#stat-countries")).to_have_text("30", timeout=10000)
+                expect(page.locator("#gateways-heading")).to_have_text("网关总览")
+                expect(page.locator(".metric-caption, .local-note, .tip-card, .config-help")).to_have_count(0)
+                # Diagnostics stay available without occupying the default overview.
+                diagnostics = page.locator("details.runtime-banner")
+                expect(diagnostics).not_to_have_attribute("open", "")
+                expect(page.locator("#runtime-server-ips")).not_to_be_visible()
+                diagnostics.locator("summary").focus()
+                page.keyboard.press("Enter")
+                expect(page.locator("#runtime-server-ips")).to_be_visible()
+                page.keyboard.press("Enter")
+                expect(page.locator("#runtime-server-ips")).not_to_be_visible()
+                expect(page.locator("#country-source")).not_to_be_visible()
+                page.locator(".source-disclosure summary").click()
+                expect(page.locator("#country-source")).to_be_visible()
+                page.locator(".source-disclosure summary").click()
+                expect(page.locator("#gateway-list")).to_contain_text("暂无网关")
                 assert "#token" not in page.url
                 expect(page.locator(".runtime-banner [data-access-host]")).to_have_text(expected_host)
                 expect(page.locator("#runtime-addresses")).to_contain_text(f"http://127.0.0.1:{server.server_port}/")
@@ -109,6 +125,7 @@ def main():
                 client.offline = False
                 page.locator("#refresh-countries").click()
                 expect(page.locator("#view-countries [data-country-stale]")).to_contain_text("未过期")
+                expect(page.locator("#view-countries [data-country-stale]")).not_to_be_visible()
                 page.get_by_role("button", name="网关总览", exact=False).first.click()
                 screenshot = Path(os.environ.get("SCREENSHOT_DIR", Path(__file__).resolve().parents[1]/"docs"/"assets"))/"dashboard.png"
                 screenshot.parent.mkdir(parents=True, exist_ok=True)
@@ -118,6 +135,22 @@ def main():
                 page.set_viewport_size({"width": 390, "height": 844})
                 page.screenshot(path=str(screenshot.with_name("dashboard-mobile.png")), full_page=True)
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"), "Mobile horizontal overflow"
+                for width in (360, 768, 1024):
+                    page.set_viewport_size({"width": width, "height": 900})
+                    for view in ("countries", "events", "settings", "gateways"):
+                        page.locator(f'.nav-item[data-view="{view}"]').click()
+                        expect(page.locator(f"#view-{view}")).to_be_visible()
+                        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"{view}: overflow at {width}px"
+                page.set_viewport_size({"width": 390, "height": 844})
+                page.locator("#add-gateway").click()
+                expect(page.locator("#gateway-dialog")).to_be_visible()
+                expect(page.locator("#gateway-dialog")).to_contain_text("全接口监听，远程访问建议设置代理密码。")
+                page.screenshot(path=str(screenshot.with_name("gateway-mobile.png")), full_page=True)
+                page.locator("#gateway-cancel").click()
+                page.locator("#btn-quick-clean-proxies").click()
+                expect(page.locator("#clean-confirm-dialog")).to_contain_text("删除账户全部代理，并重置客户端会话。")
+                expect(page.locator("#clean-confirm-dialog .notice.warning")).to_be_visible()
+                page.locator("#clean-cancel").click()
                 page.set_viewport_size({"width": 1440, "height": 1100})
                 # Exercise actual authenticated management actions from the cards.
                 us = page.locator(".gateway-card").filter(has_text="美国 · 工作")

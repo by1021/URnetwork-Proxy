@@ -12,7 +12,7 @@ HEADER_LIMIT = 32768
 class MixedProxyServer:
     """Each accepted connection snapshots its upstream; established tunnels never migrate."""
     def __init__(self, host, port, get_upstream, *, username="", password="",
-                 on_result=None, timeout=15, idle_timeout=300, max_connections=256):
+                 on_result=None, timeout=20, idle_timeout=300, max_connections=256):
         self.host, self.port = host, port
         self.get_upstream = get_upstream
         self.username, self.password = username, password
@@ -192,8 +192,17 @@ class MixedProxyServer:
                 host, port = parsed.hostname, parsed.port
                 if not host or not port or parsed.path or parsed.username or parsed.query or parsed.fragment:
                     raise ValueError("Invalid CONNECT authority")
-                remote_r, remote_w = await open_tunnel(
-                    self._upstream(), host, port, protocol="http", timeout=self.timeout)
+                try:
+                    remote_r, remote_w = await open_tunnel(
+                        self._upstream(), host, port, protocol="http", timeout=self.timeout)
+                except asyncio.TimeoutError:
+                    if not committed:
+                        await self._http_error(writer, 504, "Gateway Timeout")
+                    return
+                except (OSError, ProxyError):
+                    if not committed:
+                        await self._http_error(writer, 502, "Bad Gateway")
+                    return
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 await writer.drain()
                 committed = True

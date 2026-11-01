@@ -52,15 +52,21 @@ def _probe(host, port, token, password, target_host, timeout, protocol,
     try:
         sock = socket.create_connection((host, port), _remaining(deadline))
         if protocol == 'socks':
-            sock.sendall(b'\x05\x01\x02')
-            if _recv(sock, 2, deadline) != b'\x05\x02':
-                raise OSError('SOCKS authentication method rejected')
-            user, pwd = token.encode(), password.encode()
-            if not 0 < len(user) <= 255 or not 0 < len(pwd) <= 255:
-                raise ValueError('Invalid credential length')
-            sock.sendall(b'\x01' + bytes([len(user)]) + user + bytes([len(pwd)]) + pwd)
-            if _recv(sock, 2, deadline) != b'\x01\x00':
-                raise OSError('SOCKS authentication rejected')
+            user, pwd = (token or '').encode(), (password or '').encode()
+            has_creds = bool(user and user != b'none')
+            sock.sendall(b'\x05\x01\x02' if has_creds else b'\x05\x01\x00')
+            method_reply = _recv(sock, 2, deadline)
+            if has_creds:
+                if method_reply != b'\x05\x02':
+                    raise OSError('SOCKS authentication method rejected')
+                if not 0 < len(user) <= 255 or not 0 < len(pwd) <= 255:
+                    raise ValueError('Invalid credential length')
+                sock.sendall(b'\x01' + bytes([len(user)]) + user + bytes([len(pwd)]) + pwd)
+                if _recv(sock, 2, deadline) != b'\x01\x00':
+                    raise OSError('SOCKS authentication rejected')
+            else:
+                if method_reply != b'\x05\x00':
+                    raise OSError('SOCKS authentication method rejected')
             domain = target_host.encode('idna')
             sock.sendall(b'\x05\x01\x00\x03' + bytes([len(domain)]) + domain + target_port.to_bytes(2, 'big'))
             version, rep, reserved, atyp = _recv(sock, 4, deadline)
@@ -119,29 +125,37 @@ def _probe(host, port, token, password, target_host, timeout, protocol,
             sock.close()
 
 
-def test_http_proxy(host, port, token, password='none', target_host='api.ipify.org', timeout=8, **kwargs):
+def test_http_proxy(host, port, token, password='none', target_host='api.ipify.org', timeout=15, **kwargs):
     return _probe(host, port, token, password, target_host, timeout, 'http', **kwargs)
 
 
-def test_socks5_proxy(host, port, token, password='none', target_host='api.ipify.org', timeout=8, **kwargs):
+def test_socks5_proxy(host, port, token, password='none', target_host='api.ipify.org', timeout=15, **kwargs):
     return _probe(host, port, token, password, target_host, timeout, 'socks', **kwargs)
 
 
-def test_full_proxy(host, http_port, socks_port, token, password='none', timeout=8):
+def test_full_proxy(host, http_port, socks_port, token, password='none', timeout=15):
     http = test_http_proxy(host, http_port, token, password, timeout=timeout)
     socks = test_socks5_proxy(host, socks_port, token, password, timeout=timeout)
     return dict(http_ok=http[0], http_ms=http[1], http_result=http[2],
                 socks_ok=socks[0], socks_ms=socks[1], socks_result=socks[2])
 
 
-async def probe_upstream(upstream):
+async def probe_upstream(upstream, timeout=15):
+    targets = ('api.ipify.org', 'checkip.amazonaws.com', 'icanhazip.com')
     async def one(fn, port):
         last = (False, None, 'Probe failed')
-        for target in ('api.ipify.org', 'checkip.amazonaws.com'):
+        # Try primary and secondary targets, with quick retry on transient timeout
+        for target in targets:
             last = await asyncio.to_thread(fn, upstream['host'], port,
-                upstream['auth_token'], upstream.get('password', 'none'), target, 8)
+                upstream['auth_token'], upstream.get('password', 'none'), target, timeout)
             if last[0]:
-                break
+                return last
+        # One quick retry on transient failure to avoid false-positive dead node rotation
+        for target in targets[:2]:
+            last = await asyncio.to_thread(fn, upstream['host'], port,
+                upstream['auth_token'], upstream.get('password', 'none'), target, timeout)
+            if last[0]:
+                return last
         return last
     http, socks = await asyncio.gather(one(test_http_proxy, upstream['http_port']),
                                        one(test_socks5_proxy, upstream['socks_port']))

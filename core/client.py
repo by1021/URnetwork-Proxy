@@ -328,7 +328,7 @@ class URClient:
             "clients_reset": clients_reset
         }
 
-    def create_proxy(self, mode="best", target="", protocol="socks", location_id=None):
+    def create_proxy(self, mode="best", target="", protocol="socks", location_id=None, gateway_name="", gateway_id="", **kwargs):
         """
         分配代理节点
         mode: 'best' | 'country' | 'city'
@@ -383,8 +383,11 @@ class URClient:
             raise ValueError(f"未知策略模式: {mode}")
 
         proto_clean = protocol.lower() if protocol in ["socks", "https", "wireguard"] else "socks"
-        description = f"resident proxy · {loc_label}"
-        device_spec = f"ur.io proxy {proto_clean}"
+        tag = (gateway_name or (gateway_id[:8] if gateway_id else "")).strip()
+        desc_suffix = f" [{tag}]" if tag else ""
+        description = f"resident proxy · {loc_label}{desc_suffix}"
+        spec_suffix = f" {tag}" if tag else ""
+        device_spec = f"ur.io proxy {proto_clean}{spec_suffix}"
 
         payload = {
             "description": description,
