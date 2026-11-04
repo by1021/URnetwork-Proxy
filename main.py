@@ -19,7 +19,7 @@ import argparse
 from core.config import ConfigError, load_config, save_config
 from core.client import URClient
 from core.locator import fetch_live_countries, search_cities
-from core.checker import test_tcp_ping, test_full_proxy
+from core.checker import test_full_proxy
 
 HOT_COUNTRIES = ["US", "JP", "DE", "GB", "SG", "HK", "FR", "CA", "KR", "AU"]
 

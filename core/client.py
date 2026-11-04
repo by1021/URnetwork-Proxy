@@ -8,7 +8,6 @@ URnetwork 核心 API 客户端
 import urllib.request
 import json
 import base64
-import time
 import threading
 import urllib.error
 from .locator import search_cities
@@ -150,8 +149,6 @@ class URClient:
         if self.auth_code:
             payload = {"auth_code": self.auth_code}
             res = self._request("/auth/code-login", method="POST", body=payload, auth=False)
-            if "error" in res and res["error"]:
-                raise RuntimeError(f"授权码兑换失败: {res['error'].get('message', res['error'])}")
             by_jwt = res.get("by_jwt")
             if not by_jwt:
                 raise RuntimeError("授权码登录未返回有效凭证。")
@@ -168,9 +165,6 @@ class URClient:
                 "verify_otp_numeric": True
             }
             res = self._request("/auth/login-with-password", method="POST", body=payload, auth=False)
-            if "error" in res and res["error"]:
-                err_msg = res["error"].get("message", str(res["error"]))
-                raise RuntimeError(f"邮箱密码登录失败: {err_msg} (如果是 Google 快捷登录注册的用户，请使用网页 Auth Code 或 API Key 登录)")
             if res.get("verification_required"):
                 raise RuntimeError("此账号开启了两步验证，请登录网页端生成 Auth Code 或 API Key。")
             net = res.get("network", {})
@@ -189,8 +183,6 @@ class URClient:
                 "result_errors": True
             }
             res = self._request("/auth/login", method="POST", body=payload, auth=False)
-            if "error" in res and res["error"]:
-                raise RuntimeError(f"助记词登录失败: {res['error'].get('message', res['error'])}")
             net = res.get("network", {})
             by_jwt = net.get("by_jwt")
             if not by_jwt:
@@ -205,8 +197,6 @@ class URClient:
     def create_api_key(self, name="URnetwork-Proxy-Client"):
         """为当前账号生成一个长期有效的 API Key (urn_...)"""
         res = self._request("/account/api-key", method="POST", body={"name": name})
-        if "error" in res and res["error"]:
-            raise RuntimeError(f"创建 API Key 失败: {res['error'].get('message', res['error'])}")
         return res
 
     def list_api_keys(self):
@@ -224,15 +214,11 @@ class URClient:
         若账号已有助记词，服务端将返回错误，此时可使用 regenerate_seedphrase
         """
         res = self._request("/auth/generate-seedphrase", method="POST", body={})
-        if "error" in res and res["error"]:
-            raise RuntimeError(f"生成助记词失败: {res['error'].get('message', res['error'])}")
         return res.get("seedphrase")
 
     def regenerate_seedphrase(self):
         """重置并重新生成 24 位助记词"""
         res = self._request("/auth/regenerate-seedphrase", method="POST", body={})
-        if "error" in res and res["error"]:
-            raise RuntimeError(f"重新生成助记词失败: {res['error'].get('message', res['error'])}")
         return res.get("seedphrase")
 
     def get_account_status(self):

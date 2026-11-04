@@ -15,22 +15,9 @@ Bugfix，延续网关复制地址任务；无 `.ai_state`，直接工作，不�
 - AC2: 即使浏览器对无版本 /app.js 接收旧脚本，当前 HTML 加载的带版本资源仍生效；IPv4/IPv6、域名、HTTP/HTTPS 和转发端口下复制行为保持正确。
 - AC3: 实际正在运行的域名入口展示新版本，真实网关 HTTP/SOCKS5 复制为当前访问主机加网关端口；保存裁剪证据，不泄漏凭据，不修改已有网关配置。
 
-## 验证记录
 
-| 范围 | 命令 / 证据 | 结果 |
-| --- | --- | --- |
-| 红 | `tests.browser_addresses`，对无版本 app.js 返回模拟旧脚本 | 登录版本断言失败；`/tmp/urnetwork-ui-version-red.log` |
-| AC1–2 | `athena run -- env CHROMIUM_PATH=/usr/bin/chromium SCREENSHOT_DIR=/tmp/urnetwork-ui-version-evidence python -m tests.browser_addresses` | 7 场景通过；确认请求带版本 URL、旧脚本未执行、登录页/页脚版本及 HTTP/SOCKS5 复制值正确；`/tmp/urnetwork-ui-version-browser.log` |
-| AC1 兼容 | 源码检查 | 版本标识使用 querySelectorAll，旧 HTML 无对应节点时空遍历，不增加必需 DOM 节点 |
-| AC3 实际服务 | `athena run -- python /tmp/urnetwork-live-copy-check.py` | 实际域名 8777、新版本资源与标识、真实网关两个复制动作通过；`/tmp/urnetwork-live-copy-version.log` |
-| 全量 | `athena run -- bash -c 'node --check web/app.js && python -m pytest -q && git diff --check'` | 125 passed、67 subtests passed；`/tmp/urnetwork-ui-version-tests.log` |
+## 历史入口说明
 
 运行进程未重启，仍为本轮开始时的进程；用户配置和既有网关文件哈希前后相同。真实管理浏览器仅做本地登录、查询、复制、退出；账号/国家的上游请求在浏览器被阻断，未修改网关。真实页截图已裁剪为地址区域：`docs/assets/gateway-copy-live.png`。
 
 实际 `1080` 仍只绑定回环，复制地址修正不意味着远程代理直连已经生效。本轮没有调整监听、安全边界或端口转发。旧页面来源尚未确定；已确认当前域名 8777 返回新代码，不能把旧提示直接归因为浏览器缓存。
-
-没有 `.ai_state`，Athena 检查执行但不生成 sprint/门禁凭证；独立审查使用外置材料包。
-
-两套既有 Chromium 回归 `tests.browser_smoke` / `tests.browser_config` 通过，无 JS/CSP 错误；日志 `/tmp/urnetwork-ui-version-regression.log`。
-
-独立审查返回 `VERDICT: PASS`，AC1–AC3 无需修复项；审查方独立复跑 7 个 Chromium 场景与静态检查通过，另核对实际入口脚本/日志/截图。原样输出 `/tmp/urnetwork-ui-version-review-result.txt`。审查期间源码未修改。

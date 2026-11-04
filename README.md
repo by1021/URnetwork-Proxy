@@ -9,7 +9,6 @@
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero%20(Standard%20Library)-brightgreen.svg)]()
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-orange.svg)]()
 [![Protocols](https://img.shields.io/badge/Protocols-HTTP%20%7C%20HTTPS%20%7C%20SOCKS5-red.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-98%20Passed-success.svg)]()
 
 [**简体中文**](./README.md) | [**快速上手**](#-快速上手与多端启动) | [**Web 控制台**](#️-web-管理控制台与双模式配置面板) | [**配置规范**](#️-配置规范-configjson) | [**命令行参考**](#-命令行静默模式-cli) | [**第三方集成**](#-第三方客户端与系统集成)
 
@@ -50,7 +49,6 @@
   - [规则分流客户端 (Clash / sing-box)](#4-代理分流客户端配置-clash--sing-box)
 - [📦 Python SDK 编程式调用](#-python-sdk-编程式调用)
 - [📂 完整项目目录结构](#-完整项目目录结构)
-- [🧪 自动化测试与质量验证](#-自动化测试与质量验证)
 - [❓ 常见问题与避坑指南 (FAQ)](#-常见问题与避坑指南-faq)
 - [📄 开源协议与免责声明](#-开源协议与免责声明)
 
@@ -634,26 +632,11 @@ URnetwork-Proxy/
 │   ├── index.html              # 控制台单页面入口 (网关卡片、拓扑展示、配置面板、配额监控)
 │   ├── app.js                  # 控制台交互逻辑 (状态轮询、双向数据绑定、动态表单校验)
 │   └── style.css               # 响应式界面样式 (卡片化布局、自适应移动端与桌面端)
-├── docs/                       # 架构设计与技术规格文档
-│   ├── architecture.md         # 系统全景架构设计文档
-│   ├── gateway-guide.md        # 多网关与单端口复用深度使用指南
-│   ├── config-panel-design.md  # 双模式配置面板设计与安全规范
-│   └── assets/                 # 架构图示与控制台高清截图
-└── tests/                      # 自动化测试套件 (覆盖网关、协议复用、配置中心、Web 服务等 98 个用例)
-```
-
----
-
-## 🧪 自动化测试与质量验证
-
-项目包含严密的自动化测试套件，涵盖协议复用、多网关自愈、配置中心与 Web 服务交互：
-
-```bash
-# 执行全量自动化单元与集成测试 (默认包含 98 个测试用例，耗时约 20 秒)
-python3 -m unittest discover tests
-
-# 静态字节码语法编译检查
-python3 -m compileall -q core main.py tests
+└── docs/                       # 架构设计与技术规格文档
+    ├── architecture.md         # 系统全景架构设计文档
+    ├── gateway-guide.md        # 多网关与单端口复用深度使用指南
+    ├── config-panel-design.md  # 双模式配置面板设计与安全规范
+    └── assets/                 # 架构图示与控制台高清截图
 ```
 
 ---

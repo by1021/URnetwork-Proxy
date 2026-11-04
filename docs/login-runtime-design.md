@@ -23,21 +23,7 @@
 
 运行 IP 是服务所在主机/容器的网卡路由地址，不是代理出口 IP，也不保证是 NAT 后的公网地址。不调用外部 IP 查询服务、不改变监听范围或代理地址；局域网、容器地址会如实显示。公网 NAT 映射不在本次自动识别范围。
 
-## 验证证据
-
-| 范围 | 检查 | 结果 |
-|---|---|---|
-| AC1–4 / 全量回归 | `athena run -- python -m pytest -q` | 121 passed，67 subtests passed |
-| AC1–2 / AC4–5 | `athena run -- env CHROMIUM_PATH=/usr/bin/chromium SCREENSHOT_DIR=/tmp/urnetwork-login-runtime-evidence python -m tests.browser_smoke` | Chromium：错误/正常登录、会话刷新、退出、真实 IP、网关 CRUD、移动端均通过 |
-| AC3 / AC5 | `athena run -- env CHROMIUM_PATH=/usr/bin/chromium SCREENSHOT_DIR=/tmp/urnetwork-login-runtime-evidence/config python -m tests.browser_config` | 管理账号编辑、密码遮罩、磁盘保存、原配置编辑回归、移动端均通过 |
-| AC4 | 临时空状态启动真实 `serve({}, host="::", ...)`，读取 `/api/runtime` 并登录后以 SIGINT 关闭 | 实际 IP / 日志 / API 一致，IPv4/IPv6 访问链接格式正确，干净退出 |
-| 静态检查 | `node --check web/app.js`、`python -m compileall -q core main.py tests`、`git diff --check` | 均通过 |
-
-已先验证旧实现的用户名/密码登录与运行信息接口测试失败，再实现并通过；无效管理配置的启动锁释放也有红/绿回归。浏览器截图在临时证据目录，未覆盖原有文档资产。用户配置、既有网关状态和正在运行的服务均未修改。
-
-当前无 `.ai_state`；`athena run` 已执行检查但提示未记录 sprint 证据，`athena review prepare` 同样提示未初始化。独立只读审查使用外置材料包，不宣称生成 Athena 门禁凭证。
-
-## 独立审查修正
+## 实现边界修正
 
 首轮审查复现三项边界问题，均补充失败回归后修正：
 

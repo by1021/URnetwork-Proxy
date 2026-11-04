@@ -15,17 +15,3 @@ Bugfix；延续访问地址自适应任务。用户明确追加：HTTP/SOCKS 复
 - AC3: 地址展示与真实监听分开标注；保持已有账号、网关生命周期和配置行为；旧浏览器回归与单测通过。
 
 本次要求覆盖前次「复制保留回环地址」决策；后端回环监听策略保持不变。
-
-## 验证
-
-- 红：Chromium 通过 `localhost` 打开时，期待 `localhost:10801`，旧实现实际为 `127.0.0.1:10801`；日志 `/tmp/urnetwork-gateway-copy-host-red.log`。
-- 绿：`athena run -- env CHROMIUM_PATH=/usr/bin/chromium SCREENSHOT_DIR=/tmp/urnetwork-gateway-copy-evidence python -m tests.browser_addresses`，7 个场景通过。覆盖两种代理显示/title、真实系统剪贴板写入读取、拒绝权限和 Clipboard API 缺失时手动复制弹框；同一网关端口不随管理端口或 TLS 协议变化。
-- 全量：`athena run -- bash -c 'node --check web/app.js && python -m pytest -q && git diff --check'`，125 passed、67 subtests passed；日志 `/tmp/urnetwork-gateway-copy-tests.log`。
-- 本次代码仅修改 `web/app.js` 的地址生成及提示，浏览器回归更新 `tests/browser_addresses.py`；使用说明同步 `docs/gateway-guide.md`。不触碰后端监听、用户配置或已有网关数据。
-- 既有 Chromium 回归：`tests.browser_smoke` 与 `tests.browser_config`（经 `athena run`），全部通过，无 JS/CSP 错误；日志 `/tmp/urnetwork-gateway-copy-regression.log`。截图 `/tmp/urnetwork-gateway-copy-evidence/adaptive-address.png` 已人工查看。
-
-当前未初始化 `.ai_state`，`athena run` 执行验证但不记录 sprint 凭证；独立审查使用外置材料包，不宣称生成 Athena CLI 门禁记录。
-
-## 独立审查
-
-材料包 `/tmp/urnetwork-gateway-copy-review-packet.md`；独立 reviewer 返回 `VERDICT: PASS`，AC1–AC3 无需修复项，并另行复跑 7 个 Chromium 场景与静态检查通过。原样输出 `/tmp/urnetwork-gateway-copy-review-result.txt`。源码在审查期间未修改。

@@ -108,14 +108,4 @@ curl.exe --noproxy "" --socks5-hostname 127.0.0.1:10801 https://api.ipify.org
 
 网关支持在前端或 API 可选设置代理用户名和密码（`username`/`password`），用于保护公网代理入口。凭据安全隔离存储在受限的私有凭据文件中，服务重启后自动安全恢复带密码监听，绝不降级为免密入口；清空密码即恢复免密模式。
 
-## 测试
-
-```powershell
-python -m unittest discover -s tests -v
-python -m compileall -q core main.py
-```
-
-默认测试仅本地 TCP 和内存 API，不连接真实账号或消耗远端配额。
-可选界面回归：`python -m tests.browser_smoke`（开发环境需安装 Playwright 浏览器）。
-配置面板回归：`python -m tests.browser_config`（真实浏览器 + 临时 config.json；不访问真实账号）。
-详见 `docs/architecture.md` 和 `docs/design.md`。
+架构与设计详见 [当前架构](architecture.md) 和 [多网关设计](design.md)。

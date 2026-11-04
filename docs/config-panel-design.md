@@ -26,18 +26,10 @@
 
 Python `json` 的 `object_pairs_hook` / `JSONDecodeError`（官方文档）；Playwright Python locators 与 assertions（官方文档）。JSONC 预处理由本项目字符串感知扫描器实现。
 
-## 验证记录
+## 实现边界修正
 
-| 验收 | 证据 |
-|---|---|
-| AC1–AC2 | `python -m tests.browser_config`：表单/源码双向切换、真实临时文件保存、认证替换/保留、扩展字段及大整数精确保留 |
-| AC3–AC5 | `python -m pytest -q`：98 passed；JSONC、重复键、字段边界、版本冲突、写入失败不覆盖、旧凭据迁移与备份、账号资源保护 |
-| AC6 | 两个真实 Chromium 脚本通过：`python -m tests.browser_config`、`python -m tests.browser_smoke`；桌面/移动端、深浅主题、无 JS/CSP 错误；`node --check web/app.js` 与 `git diff --check` 通过 |
+历史实现中已修正扩展字段大整数失真、Windows CRLF 大小边界、对象请求重复键漏检。
 
-验证命令通过 `node C:/Users/Administrator/.athena/current/cli.cjs run -- ...` 执行；无活跃 sprint，CLI 未记录 `.ai_state` 门禁证据，未伪造状态。测试仅使用临时文件和模拟上游，没有执行真实账号清理、登录或重启。
-
-独立 reviewer 初审发现并已修复：扩展字段大整数失真、Windows CRLF 大小边界、对象请求重复键漏检。修复后独立复核 `VERDICT: PASS`；独立复跑 98 项单测及三项复现通过。
-
-复核源码/测试范围：core/config.py、core/config_editor.py、core/storage.py、core/web_server.py、web/app.js、web/index.html、web/style.css、tests/test_config_editor.py、tests/test_web.py、tests/browser_config.py。按排序文件名 + NUL + 文件字节 + NUL 计算 SHA256：`b57fe6ff28ff8201d14a325bc456264112575e682722192fc47ca72f0820f9ae`。
+## 界面截图
 
 截图：`docs/assets/config-panel.png`、`docs/assets/config-panel-source.png`、`docs/assets/config-panel-mobile.png`。
