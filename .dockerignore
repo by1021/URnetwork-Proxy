@@ -1,0 +1,14 @@
+# Allow only runtime sources; never send credentials, state or Git/MindFS data.
+**
+!Dockerfile
+!requirements.txt
+!main.py
+!config.example.json
+!core/
+!core/*.py
+!web/
+!web/*.html
+!web/*.js
+!web/*.css
+!docker/
+!docker/healthcheck.py

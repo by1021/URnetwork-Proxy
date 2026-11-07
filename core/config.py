@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 import ipaddress
 import json
+import os
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
 from .storage import atomic_json
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-CONFIG_FILE = BASE_DIR / "config.json"
+# Mount the parent directory: atomic saves replace the config file's inode.
+CONFIG_FILE = Path(os.environ.get("URNETWORK_CONFIG_FILE") or BASE_DIR / "config.json").expanduser()
 EXAMPLE_CONFIG_FILE = BASE_DIR / "config.example.json"
 
 DEFAULT_CONFIG = {

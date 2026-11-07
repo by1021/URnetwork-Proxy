@@ -1,0 +1,28 @@
+services:
+  urnetwork-proxy:
+    build: .
+    image: urnetwork-proxy:local
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 150s
+    ports:
+      - "${URNETWORK_WEB_BIND:-127.0.0.1}:${URNETWORK_WEB_PORT:-8777}:8777"
+      # Keep host and container gateway ports identical for copied proxy URLs.
+      - "${URNETWORK_GATEWAY_BIND:-127.0.0.1}:${URNETWORK_GATEWAY_PORTS:-10801-10810}:${URNETWORK_GATEWAY_PORTS:-10801-10810}"
+    volumes:
+      - urnetwork-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  urnetwork-data:

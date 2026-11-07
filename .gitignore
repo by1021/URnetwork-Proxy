@@ -11,3 +11,4 @@ __pycache__/
 # Local runtime state and credentials
 .local/
 config.json
+.env

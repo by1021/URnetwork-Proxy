@@ -32,6 +32,7 @@
   - [2. Linux / macOS 运行](#2-linux--macos-运行)
   - [3. Windows 运行](#3-windows-运行)
   - [4. Linux 生产环境后台常驻与 Systemd 守护进程](#4-linux-生产环境后台常驻与-systemd-守护进程)
+  - [5. Docker Compose 部署](#5-docker-compose-部署)
 - [🖥️ Web 管理控制台与双模式配置面板](#️-web-管理控制台与双模式配置面板)
   - [本地网关与动态调度](#1-本地多网关管理与健康自愈)
   - [全球 90+ 国家实时拓扑](#2-全球-90-国家实时拓扑)
@@ -241,6 +242,25 @@ nohup ./start_web.sh > web.log 2>&1 &
 # 查看后台运行日志与登录令牌
 tail -f web.log
 ```
+
+---
+
+### 5. Docker Compose 部署
+
+安装 Docker 和 Compose v2+ 后，在项目根目录执行：
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+访问 <http://127.0.0.1:8777>，默认账号 `admin / admin`。首次登录后在配置面板填写上游凭据、修改管理密码，再执行 `docker compose restart urnetwork-proxy`。
+
+- 默认仅向宿主机回环地址发布管理端口 `8777` 和代理端口 `10801–10810`；在控制台创建网关时选择该端口范围，并监听 `0.0.0.0` / `::`。
+- 配置、网关状态和证书统一保存在 `/data` 命名卷，容器重建后保留；不自动读取宿主机的 `config.json`。
+- 镜像非 root 运行，内置 OpenSSL 和健康检查，保留原有 CLI 使用方式。
+
+端口修改、远程访问、迁移、备份恢复及更新步骤见 [Docker 部署指南](docs/docker.md)。
 
 ---
 
@@ -610,6 +630,10 @@ URnetwork-Proxy/
 ├── config.example.json         # 带详尽注释的配置模板 (JSONC 规范)
 ├── main.py                     # 程序总入口 (CLI 命令行与 Web 控制台引导)
 ├── requirements.txt            # 依赖说明清单 (0 外部依赖，原生标准库运行)
+├── Dockerfile                  # 非 root Python 镜像，包含 OpenSSL 与健康检查
+├── compose.yaml                # 端口映射、持久化卷和服务运行配置
+├── .dockerignore               # 构建上下文白名单，排除本地凭据与状态
+├── docker/healthcheck.py        # 容器内管理 API 健康检查
 ├── start.sh                    # Linux / macOS 交互式 CLI 启动脚本 (可执行)
 ├── start_web.sh                # Linux / macOS Web 控制台启动脚本 (可执行)
 ├── start.bat                   # Windows 快速启动交互式 CLI 脚本
@@ -635,6 +659,7 @@ URnetwork-Proxy/
 └── docs/                       # 架构设计与技术规格文档
     ├── architecture.md         # 系统全景架构设计文档
     ├── gateway-guide.md        # 多网关与单端口复用深度使用指南
+    ├── docker.md               # Docker 部署、迁移和维护指南
     ├── config-panel-design.md  # 双模式配置面板设计与安全规范
     └── assets/                 # 架构图示与控制台高清截图
 ```
