@@ -35,7 +35,7 @@ MAX_OWNED_PER_GATEWAY = 2
 PROBE_TIMEOUT = 35.0
 EVENT_LIMIT = 1000
 CONFIG_DEFAULTS = {
-    "name": "Gateway", "host": "127.0.0.1", "port": 1080, "mode": "best",
+    "name": "Gateway", "host": "127.0.0.1", "port": 10801, "mode": "best",
     "country_code": "", "location_id": None, "enabled": False,
     "auto_heal": True, "interval": 30, "failures_before_rotate": 3,
 }

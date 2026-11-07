@@ -698,7 +698,7 @@
     $('gateway-name').value = gateway?.name || '';
     if ($('gateway-host')) $('gateway-host').value = gateway?.host || '::';
     const used = new Set(state.gateways.map((item) => Number(item.port)));
-    let port = 1080; while (used.has(port) && port < 65535) port += 1;
+    let port = 10801; while (used.has(port) && port < 65535) port += 1;
     $('gateway-port').value = gateway?.port ?? port;
     if ($('gateway-username')) $('gateway-username').value = gateway?.username || '';
     if ($('gateway-password')) $('gateway-password').value = gateway?.password || '';
