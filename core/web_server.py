@@ -73,6 +73,7 @@ class ManagementApp:
         self.gateway_update_locks = weakref.WeakValueDictionary()
         self.account_cache = (0, None)
         self.account_lock = threading.Lock()
+        self._last_loaded_revision = None
 
     def _load_gateway_auth(self):
         auth_file = self.state_dir / "gateway_auth.json"
@@ -198,15 +199,57 @@ class ManagementApp:
         return runtime_info(self.runtime_ips, self.web_host, self.web_port, dual_stack=self.dual_stack,
                             allowed_hosts=self.config.get("allowed_hosts"))
 
-    def configuration(self, snapshot=None):
+    def _apply_configuration(self, candidate):
+        self.config.update(candidate)
+        auth = validate_config({k: self.config.get(k, DEFAULT_CONFIG[k])
+                                for k in ("web_username", "web_password")})
+        self.web_username = auth["web_username"]
+        self.web_password = auth["web_password"]
+        with self.client._lock:
+            self.client.api_key = (candidate.get("api_key", "") or "").strip()
+            self.client.jwt_token = (candidate.get("jwt_token", "") or "").strip()
+            self.client.seedphrase = (candidate.get("seedphrase", "") or "").strip()
+            self.client.auth_code = (candidate.get("auth_code", "") or "").strip()
+            self.client.email = (candidate.get("email", "") or "").strip()
+            self.client.password = (candidate.get("password", "") or "").strip()
+            self.client.api_base = candidate.get("api_base_url", "https://api.bringyour.com").rstrip("/")
+            self.client.timeout = candidate.get("timeout_seconds", 15)
+            self.client.jwt = None
+            self.client.jwt_payload = {}
+            self.client.network_info = {}
+            self.client.auth_method = "none"
+        with self.account_lock:
+            self.account_cache = (0, None)
+        self.catalog = CountryCatalog(self.client)
+        self.manager.client = self.client
+        if hasattr(self.manager, "_relay_factory"):
+            tls_cfg = {
+                "state_dir": self.state_dir,
+                "cert_file": candidate.get("tls_cert_file", ""),
+                "key_file": candidate.get("tls_key_file", ""),
+            }
+            from .gateway import _default_relay
+            self.manager._relay_factory = lambda *a, **kw: _default_relay(
+                *a, **kw, tls_config={"state_dir": self.state_dir, **tls_cfg})
+
+    def configuration(self, snapshot=None, *, reveal=False):
         config, revision, legacy, exists = snapshot or self.config_editor.read()
-        redacted = self.config_editor.redacted(config)
-        changed = [key for key, default in DEFAULT_CONFIG.items()
-                   if config.get(key, default) != self.config.get(key, default)]
+        if snapshot is None and self._last_loaded_revision and revision != self._last_loaded_revision:
+            try:
+                self._apply_configuration(config)
+                self._last_loaded_revision = revision
+            except Exception:
+                pass
+        redacted = dict(config) if reveal else self.config_editor.redacted(config)
+        restart_fields = []
+        if config.get("web_port") != self.web_port:
+            restart_fields.append("web_port")
+        if config.get("web_host") != self.web_host:
+            restart_fields.append("web_host")
         return dict(config=redacted, source=json.dumps(redacted, ensure_ascii=False, indent=2),
                     revision=revision, file="config.json", exists=exists,
                     legacy_credentials=legacy, active_host=self.web_host, active_port=self.web_port,
-                    restart_required=bool(changed), restart_fields=changed)
+                    restart_required=bool(restart_fields), restart_fields=restart_fields)
 
     async def _assert_account_idle(self):
         if await self.manager.list_gateways():
@@ -230,6 +273,8 @@ class ManagementApp:
                    for key in identity_fields):
                 await self._assert_account_idle()
             snapshot = self.config_editor.save(candidate, data["revision"])
+            self._apply_configuration(candidate)
+            self._last_loaded_revision = snapshot[1]
             return self.configuration(snapshot)
         finally:
             self.updating_credentials = False
@@ -397,9 +442,18 @@ class ManagementApp:
     def dispatch(self, method, path, query, data):
         if path == "/api/config":
             if method == "GET":
-                return self.configuration()
+                params = parse_qs(query)
+                reveal = params.get("reveal", ["0"])[0] in ("1", "true")
+                return self.configuration(reveal=reveal)
             if method == "PUT":
                 return self.call(self.update_configuration(data))
+        if path == "/api/config/reveal" and method == "GET":
+            params = parse_qs(query)
+            field = params.get("field", [""])[0]
+            if field in SECRET_FIELDS:
+                config, _, _, _ = self.config_editor.read()
+                return {"field": field, "value": config.get(field, "")}
+            raise ApiProblem(400, "未知字段")
         if path == "/api/config/validate" and method == "POST":
             return self.validate_configuration(data)
         if path == "/api/gateways" and method == "GET":

@@ -10,6 +10,7 @@ from pathlib import Path
 import socket
 import ssl
 import subprocess
+import tempfile
 import time
 from urllib.request import HTTPCookieProcessor, ProxyHandler, Request, build_opener
 import uuid
@@ -30,8 +31,11 @@ def main():
     web_port, gateway_port = free_port(), free_port()
     while gateway_port == web_port:
         gateway_port = free_port()
+    smoke_dir = tempfile.mkdtemp(prefix="urnetwork-smoke-")
+    os.system(f'chown -R 10001:10001 {smoke_dir} && chmod -R 777 {smoke_dir}')
     env = {**os.environ, "URNETWORK_WEB_PORT": str(web_port),
-           "URNETWORK_GATEWAY_PORTS": str(gateway_port)}
+           "URNETWORK_GATEWAY_PORTS": str(gateway_port),
+           "URNETWORK_DATA_DIR": smoke_dir}
     base = ["docker", "compose", "-f", str(ROOT / "compose.yaml"), "-p", project]
 
     def run(args, timeout=180):
@@ -156,6 +160,8 @@ asyncio.run(main())
     finally:
         # The random project name scopes deletion to resources this test created.
         compose("down", "--volumes", "--remove-orphans")
+        import shutil
+        shutil.rmtree(smoke_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

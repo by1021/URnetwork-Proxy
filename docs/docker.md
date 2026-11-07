@@ -14,11 +14,7 @@ docker compose ps
 docker compose logs --tail=50 urnetwork-proxy
 ```
 
-访问 <http://127.0.0.1:8777>。登录后在配置面板填写上游凭据、修改 `web_username` / `web_password`，保存并重启：
-
-```bash
-docker compose restart urnetwork-proxy
-```
+访问 <http://127.0.0.1:8777>。登录后在配置面板填写上游凭据、修改 `web_username` / `web_password`，保存后立即生效，无需重启容器。
 
 首次启动不需要上游凭据；使用真实代理时再配置。容器配置独立于宿主机根目录的 `config.json`，已有配置迁移见下文。
 
@@ -61,7 +57,7 @@ HTTPS **代理**的自签名证书由镜像内 OpenSSL 自动生成，默认只�
 | `/data/state/gateway_tls.crt`、`gateway_tls.key` | 自动生成的 HTTPS 代理证书和私钥 |
 | `/data/state/credentials.json` | 从旧部署迁移的凭据（如有） |
 
-Compose 使用项目级命名卷 `urnetwork-data`（实际名称带 Compose 项目前缀）。`restart`、重建和普通 `docker compose down` 保留数据；`down --volumes` 会删除卷及其中的凭据和网关，日常更新不要使用。
+Compose 默认将持久化数据挂载至宿主机本地 `./data` 目录（并在本地自动生成 `./data/config.json`），容器重建后数据保留；也可在 `.env` 中通过 `URNETWORK_DATA_DIR=urnetwork-data` 切回命名卷。`restart`、重建和普通 `docker compose down` 保留数据；`down --volumes` 会删除卷及其中的凭据和网关，日常更新不要使用。
 
 镜像以 UID/GID `10001:10001` 运行；Compose 开启只读根文件系统，仅 `/data` 与临时目录可写。首次创建命名卷时从镜像复制无凭据模板，已有卷保持原内容。更换项目目录名或 Compose 项目名会使用另一个卷，运维时保持项目名一致。
 

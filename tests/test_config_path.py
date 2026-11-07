@@ -57,7 +57,7 @@ print(json.dumps(load_config(strict=True)))
             if os.name == "posix":
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
-    def test_missing_override_uses_example_without_creating_root_config(self):
+    def test_missing_override_creates_config_from_example(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             result = self.run_python("""
@@ -68,7 +68,7 @@ assert CONFIG_FILE == Path(os.environ['URNETWORK_CONFIG_FILE'])
 print(json.dumps(load_config(strict=True)))
 """, path)
             self.assertEqual(result["web_username"], "admin")
-            self.assertFalse(path.exists())
+            self.assertTrue(path.exists())
 
     def test_invalid_override_fails_closed_in_web_mode(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -12,3 +12,7 @@ __pycache__/
 .local/
 config.json
 .env
+
+# Persistent local data directory
+data/*
+!data/.gitkeep

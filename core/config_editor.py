@@ -70,9 +70,7 @@ class ConfigEditor:
             if key not in config and current.get(key):
                 raise ConfigError(f"请保留 {key} 占位符；清除已有凭据须显式设置空字符串")
             if config.get(key) == KEEP_SECRET:
-                if not current.get(key):
-                    raise ConfigError(f"{key} 没有已保存值，请填写或设置空字符串")
-                config[key] = current[key]
+                config[key] = current.get(key, "")
         return validate_config(config)
 
     def candidate(self, data):

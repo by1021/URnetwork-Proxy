@@ -12,7 +12,9 @@ services:
       # Keep host and container gateway ports identical for copied proxy URLs.
       - "${URNETWORK_GATEWAY_BIND:+${URNETWORK_GATEWAY_BIND}:}${URNETWORK_GATEWAY_PORTS:-10801-10810}:${URNETWORK_GATEWAY_PORTS:-10801-10810}"
     volumes:
-      - urnetwork-data:/data
+      # Default: mount local ./data directory to preserve config.json and states on host.
+      # Override URNETWORK_DATA_DIR=urnetwork-data in .env if using a named volume.
+      - "${URNETWORK_DATA_DIR:-./data}:/data"
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m

@@ -17,7 +17,7 @@
     loads: new Map(), controllers: new Set(), timers: [], pending: new Set(),
     errors: new Map(), editing: null, deleting: null, gatewayRender: '',
     savingGateway: false, savingSettings: false, loggingIn: false, view: 'gateways',
-    configSnapshot: null, configDraft: {}, configMode: 'form', configDirty: false, configLoading: false,
+    configSnapshot: null, configDraft: {}, configMode: 'form', configDirty: false, configLoading: false, configRevealed: false,
     gatewayCards: new Map(), eventRows: new Map(), recentRows: new Map(), frames: new Map(),
     refreshed: new Map(), eventOptionsRender: '', rawCountries: [], countrySorts: new Map(),
     countrySnapshot: '', countryRender: '', countryOptionsRender: ''
@@ -832,17 +832,41 @@
   // Configuration drafts stay in memory; the server never returns existing secrets.
   function configInputs() { return [...document.querySelectorAll('[data-config-field]')]; }
 
+  const SECRET_FIELDS = ['web_password', 'api_key', 'jwt_token', 'seedphrase', 'auth_code', 'email', 'password'];
+
   function writeConfigForm() {
-    configInputs().forEach((input) => { input.value = state.configDraft[input.dataset.configField] ?? ''; });
+    configInputs().forEach((input) => {
+      const field = input.dataset.configField;
+      const rawVal = state.configDraft[field];
+      if (SECRET_FIELDS.includes(field)) {
+        if (rawVal === '__KEEP_EXISTING__' || (state.configSnapshot && state.configSnapshot.config && state.configSnapshot.config[field] === '__KEEP_EXISTING__')) {
+          input.value = '';
+          input.dataset.hasSaved = 'true';
+          input.placeholder = field === 'web_password' ? '•••••••• (已保存，留空保持原密码)' : '•••••••• (已配置，留空保持原值)';
+        } else {
+          input.value = rawVal ?? '';
+          input.dataset.hasSaved = (rawVal && rawVal !== '') ? 'true' : 'false';
+          input.placeholder = '未配置';
+        }
+      } else {
+        input.value = rawVal ?? '';
+      }
+    });
   }
 
   function collectConfigForm() {
-    // Only patch known fields; the authoritative JSONC source stays as text so
-    // unknown integers/decimals never roundtrip through JavaScript Number.
     const draft = {};
     configInputs().forEach((input) => {
       const key = input.dataset.configField;
-      draft[key] = input.type === 'number' && input.value !== '' ? Number(input.value) : input.value;
+      if (SECRET_FIELDS.includes(key)) {
+        if (input.value === '' && input.dataset.hasSaved === 'true') {
+          draft[key] = '__KEEP_EXISTING__';
+        } else {
+          draft[key] = input.value;
+        }
+      } else {
+        draft[key] = input.type === 'number' && input.value !== '' ? Number(input.value) : input.value;
+      }
     });
     return draft;
   }
@@ -861,6 +885,45 @@
     configLines();
   }
 
+  
+  function setupSecretToggles() {
+    document.querySelectorAll('.toggle-secret-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const targetId = btn.dataset.target;
+        const input = $(targetId);
+        if (!input) return;
+        const eye = btn.querySelector('.icon-eye');
+        const eyeOff = btn.querySelector('.icon-eye-off');
+        if (input.type === 'text') {
+          input.type = 'password';
+          if (eye) eye.hidden = false;
+          if (eyeOff) eyeOff.hidden = true;
+        } else {
+          if (!input.value && input.dataset.hasSaved === 'true') {
+            const field = input.dataset.configField;
+            try {
+              btn.disabled = true;
+              const res = await api(`/api/config/reveal?field=${encodeURIComponent(field)}`);
+              input.value = res.value || '';
+              if (res.value) {
+                toast('已显示保存的内容');
+              } else {
+                toast('该字段暂无已保存内容');
+              }
+            } catch (err) {
+              toast('获取内容失败: ' + err.message);
+            } finally {
+              btn.disabled = false;
+            }
+          }
+          input.type = 'text';
+          if (eye) eye.hidden = true;
+          if (eyeOff) eyeOff.hidden = false;
+        }
+      });
+    });
+  }
+
   function acceptConfiguration(data) {
     if (!data.config || typeof data.source !== 'string' || typeof data.revision !== 'string') throw new Error('配置响应格式异常。');
     state.configSnapshot = data;
@@ -875,7 +938,7 @@
     $('api-base-url').textContent = data.config.api_base_url;
     $('web-server-port').textContent = String(data.active_port);
     $('config-saved-port').textContent = String(data.config.web_port);
-    message('config-restart', data.restart_required ? '配置已更新，重启生效；当前连接不变。' : '', 'warning');
+    message('config-restart', data.restart_required ? '业务配置已生效；管理服务监听地址/端口需重启后更新。' : '', 'warning');
     message('config-legacy', data.legacy_credentials ? '检测到旧版独立凭据：本次保存会迁入 config.json，并在 .local 中保留原凭据备份。' : '', 'warning');
     updateCredentialLock();
   }
@@ -945,7 +1008,11 @@
     try {
       const result = await api('/api/config', 'PUT', payload);
       acceptConfiguration(result);
-      message('settings-success', '已保存到 config.json，重启生效；当前连接不中断。', 'positive');
+      if (result.restart_required) {
+        message('settings-success', '配置已保存并立即生效（管理服务监听端口/地址需重启生效）。', 'positive');
+      } else {
+        message('settings-success', '配置已保存并立即生效，无需重启！', 'positive');
+      }
     } catch (error) {
       if (!isCancelled(error) && state.authenticated) message('settings-error', error.message);
     } finally {
@@ -1173,6 +1240,25 @@
     $('confirm-delete').addEventListener('click', deleteGateway);
     $('copy-close').addEventListener('click', () => $('copy-dialog').close());
     $('settings-form').addEventListener('submit', saveSettings);
+    setupSecretToggles();
+    $('config-reveal-toggle')?.addEventListener('click', async () => {
+      if (state.savingSettings || !state.settingsReady) return;
+      state.configRevealed = !state.configRevealed;
+      $('config-reveal-toggle').textContent = state.configRevealed ? '🙈 脱敏展示' : '👁️ 显示明文';
+      try {
+        state.configLoading = true;
+        updateCredentialLock();
+        const data = await api(`/api/config${state.configRevealed ? '?reveal=1' : ''}`);
+        $('config-source').value = data.source;
+        configLines();
+        toast(state.configRevealed ? '已显示明文凭据' : '已恢复脱敏展示');
+      } catch (err) {
+        toast('切换显示失败: ' + err.message);
+      } finally {
+        state.configLoading = false;
+        updateCredentialLock();
+      }
+    });
     document.addEventListener('visibilitychange', syncVisible);
   }
 

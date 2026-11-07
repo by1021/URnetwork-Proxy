@@ -76,10 +76,13 @@ def validate_config(cfg):
     for key in CREDENTIAL_FIELDS:
         if not isinstance(result[key], str) or len(result[key]) > 8192:
             raise ConfigError(f"{key} 须为不超过 8192 字符的文本")
+    for key in SECRET_FIELDS:
+        if result.get(key) == KEEP_SECRET:
+            raise ConfigError(f"配置字段 {key} 包含占位符 {KEEP_SECRET}，请在 config.json 中填入真实凭据或留空，不要保留占位符文本")
     for key, maximum in (("web_username", 128), ("web_password", 1024)):
         value = result[key]
         if (not isinstance(value, str) or not value.strip() or len(value) > maximum
-                or value == KEEP_SECRET or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+                or any(ord(c) < 32 or ord(c) == 127 for c in value)):
             raise ConfigError(f"{key} 须为 1–{maximum} 字符的非空文本，不含控制字符")
     for key in ("api_base_url", "ur_base_url"):
         value = result[key]
@@ -188,11 +191,21 @@ def _strip_json_comments(text: str) -> str:
     return "".join(chars)
 
 def load_config(*, strict=False):
-    """加载配置文件，若 config.json 不存在则尝试从 config.example.json 回退，支持 JSONC 注释"""
+    """加载配置文件，若 config.json 不存在则自动从 config.example.json 拷贝生成，支持 JSONC 注释"""
     target = CONFIG_FILE
     if not target.exists():
         if EXAMPLE_CONFIG_FILE.exists():
-            target = EXAMPLE_CONFIG_FILE
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                import shutil
+                shutil.copyfile(EXAMPLE_CONFIG_FILE, target)
+                if os.name == "posix":
+                    try:
+                        os.chmod(target, 0o600)
+                    except OSError:
+                        pass
+            except Exception:
+                target = EXAMPLE_CONFIG_FILE
         else:
             save_config(DEFAULT_CONFIG)
             return DEFAULT_CONFIG.copy()
