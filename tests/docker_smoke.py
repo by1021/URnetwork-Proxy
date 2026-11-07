@@ -30,8 +30,7 @@ def main():
     web_port, gateway_port = free_port(), free_port()
     while gateway_port == web_port:
         gateway_port = free_port()
-    env = {**os.environ, "URNETWORK_WEB_BIND": "127.0.0.1",
-           "URNETWORK_GATEWAY_BIND": "127.0.0.1", "URNETWORK_WEB_PORT": str(web_port),
+    env = {**os.environ, "URNETWORK_WEB_PORT": str(web_port),
            "URNETWORK_GATEWAY_PORTS": str(gateway_port)}
     base = ["docker", "compose", "-f", str(ROOT / "compose.yaml"), "-p", project]
 
@@ -80,7 +79,7 @@ print(json.dumps({name: hashlib.sha256((Path('/data') / name).read_bytes()).hexd
         assert inspection["Config"]["User"] == "10001:10001"
         assert inspection["Config"]["StopSignal"] == "SIGINT"
         assert inspection["HostConfig"]["ReadonlyRootfs"]
-        assert all(binding["HostIp"] == "127.0.0.1"
+        assert all(binding["HostIp"] in ("", "0.0.0.0", "::")
                    for bindings in inspection["HostConfig"]["PortBindings"].values() for binding in bindings)
         assert request("/api/health") == {"status": "ok"}
         assert b"<html" in request("/").lower()

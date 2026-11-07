@@ -2,7 +2,7 @@
 
 项目自带 Dockerfile 与 Compose 配置，无需在宿主机安装 Python。需要 Docker Engine / Docker Desktop（Linux 容器）和 Compose v2+。
 
-默认管理账号为 `admin / admin`，首次登录后修改密码并重启。管理页和代理端口默认仅发布到宿主机 `127.0.0.1`；远程管理推荐 SSH 隧道或 HTTPS 反向代理。不要直接开放默认密码或未设置认证的代理。
+默认管理账号为 `admin / admin`，首次登录后请务必修改密码并重启。管理页和代理端口默认发布到宿主机全接口（`0.0.0.0` / `::`），支持外网与局域网直接访问。建议为网关设置代理账号密码，生产暴露建议配合防火墙或 HTTPS 反向代理。
 
 ## 首次启动
 
@@ -26,17 +26,18 @@ docker compose restart urnetwork-proxy
 
 | 项目 | 默认值 | 说明 |
 | --- | --- | --- |
-| 管理入口 | `127.0.0.1:8777` | 容器固定监听 `0.0.0.0:8777` |
-| 代理端口 | `127.0.0.1:10801–10810` | HTTP、HTTPS、SOCKS5 共用每个网关的 TCP 端口 |
+| 管理入口 | `0.0.0.0:8777` / `[::]:8777` | 默认发布至全接口，支持外网与局域网直连 |
+| 代理端口 | `0.0.0.0:10801–10810` / `[::]:10801–10810` | 默认发布至全接口，HTTP、HTTPS、SOCKS5 共用每个网关 TCP 端口 |
 | 网关监听地址 | 在控制台选择 `0.0.0.0` / `::` | 容器内回环监听不接受 Docker 转发的连接 |
 | 网关端口选择 | `10801–10810` | 端口映射不会自动创建网关，仍需在控制台新建并启动 |
 
 管理页面中的 `web_host` / `web_port` 被镜像启动参数覆盖。要更换宿主机端口，请在根目录创建 `.env`，而不是修改配置面板：
 
 ```dotenv
-URNETWORK_WEB_BIND=127.0.0.1
+# 如需限制仅宿主机本机访问，可取消注释并指定绑定地址：
+# URNETWORK_WEB_BIND=127.0.0.1
+# URNETWORK_GATEWAY_BIND=127.0.0.1
 URNETWORK_WEB_PORT=8999
-URNETWORK_GATEWAY_BIND=127.0.0.1
 URNETWORK_GATEWAY_PORTS=10801-10820
 ```
 
@@ -46,7 +47,7 @@ docker compose up -d
 
 网关端口支持一个端口或一个连续范围，宿主机和容器保持同号；建议使用大于 1024 的未占用端口，避开容器管理端口 8777。更改映射需要 `up -d` 重建，`restart` 不更新映射。
 
-其他设备直连时，把对应 `*_BIND` 改为宿主机 LAN 地址或 `0.0.0.0`；先改管理密码、为网关设置代理账号密码并限制防火墙来源。管理和代理的开放范围分别控制。页面内显示的容器 IP 是诊断信息，客户端应使用宿主机地址及已映射端口。
+默认即支持外网与其他设备直连（绑定全网卡）。如需限制访问源，可将对应 `*_BIND` 设置为特定内网 IP 或 `127.0.0.1`。开放外网访问时请务必修改初始管理密码并为网关配置认证。页面内显示的容器 IP 是诊断信息，客户端应使用宿主机的公网/内网 IP 及映射端口。
 
 HTTPS **代理**的自签名证书由镜像内 OpenSSL 自动生成，默认只包含 localhost / 回环地址；它不为管理页面提供 HTTPS。远程 HTTPS 代理需挂载匹配域名/IP 的证书到 `/data`，在配置面板中成对填写容器内 `tls_cert_file` / `tls_key_file` 路径，重启后按[网关指南](gateway-guide.md)配置客户端信任。
 
@@ -127,7 +128,7 @@ docker compose ps
 ```bash
 docker build -t urnetwork-proxy:local .
 docker run -d --name urnetwork-proxy --init --restart unless-stopped --stop-timeout 150 \
-  -p 127.0.0.1:8777:8777 -p 127.0.0.1:10801-10810:10801-10810 \
+  -p 8777:8777 -p 10801-10810:10801-10810 \
   -v urnetwork-data:/data urnetwork-proxy:local
 ```
 
