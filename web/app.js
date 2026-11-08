@@ -3,7 +3,7 @@
   'use strict';
 
   // Keep the entry URL's version in index.html in sync when releasing UI fixes.
-  const UI_VERSION = '20261101.2';
+  const UI_VERSION = '20261108.1';
   const POLL_MS = 5000;
   const ACCOUNT_MS = 60000;
   const COUNTRIES_MS = 300000;
@@ -574,7 +574,7 @@
     if (state.pending.has(id) || !state.authenticated) return;
     state.pending.add(id); state.errors.delete(id); renderGateways(); updateCredentialLock();
     try {
-      await api(`/api/gateways/${encodeURIComponent(id)}/${action}`, 'POST', {});
+      const res = await api(`/api/gateways/${encodeURIComponent(id)}/${action}`, 'POST', {});
       await refreshAfterMutation(); loadEvents();
       if (state.authenticated) {
         if (action === 'rotate' && res && res.exit_ip) {
