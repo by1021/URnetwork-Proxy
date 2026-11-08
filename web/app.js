@@ -3,7 +3,7 @@
   'use strict';
 
   // Keep the entry URL's version in index.html in sync when releasing UI fixes.
-  const UI_VERSION = '20261108.5';
+  const UI_VERSION = '20261108.6';
   const POLL_MS = 5000;
   const ACCOUNT_MS = 60000;
   const COUNTRIES_MS = 300000;
@@ -53,6 +53,22 @@
   const timeFormat = new Intl.DateTimeFormat('zh-CN', { hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false });
   const countryCollator = new Intl.Collator('zh-CN');
   const regionNames = new Map();
+  // Provider records stay canonical for API payloads; this map only affects UI labels.
+  const locationChineseNames = new Map(Object.entries({
+    Alabama: '阿拉巴马州', Alaska: '阿拉斯加州', Arizona: '亚利桑那州', Arkansas: '阿肯色州',
+    California: '加利福尼亚州', Colorado: '科罗拉多州', Connecticut: '康涅狄格州', Delaware: '特拉华州',
+    Florida: '佛罗里达州', Georgia: '佐治亚州', Hawaii: '夏威夷州', Idaho: '爱达荷州', Illinois: '伊利诺伊州',
+    Indiana: '印第安纳州', Iowa: '爱荷华州', Kansas: '堪萨斯州', Kentucky: '肯塔基州', Louisiana: '路易斯安那州',
+    Maine: '缅因州', Maryland: '马里兰州', Massachusetts: '马萨诸塞州', Michigan: '密歇根州', Minnesota: '明尼苏达州',
+    Mississippi: '密西西比州', Missouri: '密苏里州', Montana: '蒙大拿州', Nebraska: '内布拉斯加州', Nevada: '内华达州',
+    'New Hampshire': '新罕布什尔州', 'New Jersey': '新泽西州', 'New Mexico': '新墨西哥州', 'New York': '纽约州',
+    'North Carolina': '北卡罗来纳州', 'North Dakota': '北达科他州', Ohio: '俄亥俄州', Oklahoma: '俄克拉何马州',
+    Oregon: '俄勒冈州', Pennsylvania: '宾夕法尼亚州', 'Rhode Island': '罗得岛州', 'South Carolina': '南卡罗来纳州',
+    'South Dakota': '南达科他州', Tennessee: '田纳西州', Texas: '得克萨斯州', Utah: '犹他州', Vermont: '佛蒙特州',
+    Virginia: '弗吉尼亚州', Washington: '华盛顿州', 'West Virginia': '西弗吉尼亚州', Wisconsin: '威斯康星州',
+    Wyoming: '怀俄明州', 'British Columbia': '不列颠哥伦比亚省', Ontario: '安大略省', Quebec: '魁北克省',
+    Osaka: '大阪府', Tokyo: '东京都', Kyoto: '京都府', Hokkaido: '北海道'
+  }));
   const countrySearch = new WeakMap();
   const gatewayLiveParts = new WeakMap();
 
@@ -169,6 +185,18 @@
     if (!countrySearch.has(country)) countrySearch.set(country,
       [country.code, country.name, countryName(country), regionName(country.code, 'en')].join(' ').toLowerCase());
     return countrySearch.get(country).includes(query.trim().toLowerCase());
+  }
+
+  function locationName(location) {
+    const raw = String(location?.name || location?.location_name || '').trim();
+    const translated = location?.name_zh || locationChineseNames.get(raw);
+    return translated && translated !== raw ? `${translated} / ${raw}` : raw;
+  }
+
+  function locationRegionName(location) {
+    const raw = String(location?.region || '').trim();
+    const translated = location?.region_zh || locationChineseNames.get(raw);
+    return translated && translated !== raw ? `${translated} / ${raw}` : raw;
   }
 
   function isCancelled(error) {
@@ -834,7 +862,12 @@
     $('location-region-filter').hidden = mode !== 'city';
     $('location-search-controls').hidden = mode !== 'city';
     $('location-region-controls').hidden = mode !== 'region';
-    $('gateway-location-label').textContent = mode === 'region' ? '选择可用地区（州 / 省）' : '选择精确城市';
+    $('gateway-location-label').textContent = mode === 'region' ? '选择可用地区（州 / 省 / 县）' : '选择精确城市';
+    $('gateway-mode-hint').textContent = mode === 'region'
+      ? '地区按州 / 省 / 县筛选，覆盖该行政区的可用节点；城市模式用于精确到单个城市。'
+      : mode === 'city'
+        ? '城市模式精确到单个城市；如需覆盖整个州 / 省 / 县，请选择地区模式。'
+        : '地区覆盖州 / 省 / 县范围，城市用于更精确的单城市定位。';
     if (reset) resetLocations();
     else renderLocationOptions();
     if (reset) loadGatewayRegions();
@@ -867,7 +900,7 @@
     const records = state.locations.filter((loc) => !parent || loc.region_location_id === parent);
     const empty = region ? country ? '当前国家无可用地区，请刷新或更换国家' : '请先选择国家' : '无匹配位置，请搜索或更换关键词';
     $('gateway-location').replaceChildren(new Option(state.locationLoading ? region ? '正在加载地区…' : '正在搜索…' : records.length ? '请选择具体位置' : empty, ''),
-      ...records.map((loc) => new Option(`${loc.name}${loc.region && loc.region !== loc.name ? ' · ' + loc.region : ''} (${loc.country_code})${loc.current ? ' · 当前绑定' : ' · 节点 ' + loc.provider_count}`, loc.location_id)));
+      ...records.map((loc) => new Option(`${locationName(loc)}${loc.region && loc.region !== loc.name ? ' · ' + locationRegionName(loc) : ''} (${loc.country_code})${loc.current ? ' · 当前绑定' : ' · 节点 ' + loc.provider_count}`, loc.location_id)));
     $('gateway-location').value = records.some((loc) => loc.location_id === selected) ? selected : '';
     $('gateway-location').setAttribute('aria-busy', String(state.locationLoading));
     $('gateway-regions-refresh').disabled = !country || state.locationLoading || state.savingGateway;
@@ -917,7 +950,7 @@
         if (index < 0) state.locations.push(current);
         else state.locations[index] = { ...state.locations[index], ...current };
       }
-      const parents = new Map(state.locations.filter((loc) => loc.region_location_id).map((loc) => [loc.region_location_id, loc.region || loc.name]));
+      const parents = new Map(state.locations.filter((loc) => loc.region_location_id).map((loc) => [loc.region_location_id, locationRegionName(loc) || locationName(loc)]));
       $('gateway-region-filter').replaceChildren(new Option('全部地区', ''), ...[...parents].map(([id, name]) => new Option(name, id)));
       if (parents.has(parent)) $('gateway-region-filter').value = parent;
       if (data.error) message('location-picker-error', data.error);

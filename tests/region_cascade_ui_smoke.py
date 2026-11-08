@@ -98,7 +98,7 @@ def main():
                 expect(page.locator('#location-picker-note')).to_contain_text('选择国家')
                 assert not queries, queries
                 page.locator('#gateway-country').select_option('us-country')
-                expect(page.locator('#gateway-location')).to_contain_text('California')
+                expect(page.locator('#gateway-location')).to_contain_text('加利福尼亚州 / California')
                 expect(page.locator('#gateway-location')).to_contain_text('Texas')
                 expect(page.locator('#gateway-location')).not_to_contain_text('Ohio')
                 expect(page.locator('#gateway-location')).not_to_contain_text('Baja')
