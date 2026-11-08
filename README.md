@@ -64,12 +64,13 @@
   - 独创单端口透明协议嗅探机制：首字节自动识别 SOCKS5（`0x05`）、明文 HTTP（ASCII 字符）与 HTTPS 代理 TLS 握手（`0x16`），**同一本地端口同时处理 HTTPS 加密代理、HTTP 明文代理与 SOCKS5 代理连接**，无需为不同协议开放多组端口。
 - **🛡️ 多本地网关与智能自愈 (Multi-Gateway Engine & Auto-Healing)**
   - 支持创建多个相互独立的本地监听网关（如 `31000` 绑定日本、`31001` 绑定美国），客户端只需连接固定本地端口。
-  - **故障自愈与平滑无缝换线**：后台定时多点探针检测，触发失败阈值后自动在云端申请并严格预检新候选链路；验证成功后平滑原子切换，老连接享受 30 秒排空保护，杜绝长连接突发雪崩。
+  - **三节点主备池与后台自愈**：每端口默认维护 1 主 2 备（可设 1–20）；首条就绪即可服务，故障时优先切换已有热备，后台补齐/修复。普通同绑定换线保留其他健康隧道；已失效流由客户端重连，不迁移会话、不重放 POST。
 - **🖥️ 现代化 Web 控制台与双模式配置中心**
   - 提供响应式 Web 管理界面，支持可视化添加、编辑、启动、停止与手动重连网关。
   - **双模式配置面板**：可视化表单与带语法高亮的 JSONC 源码编辑自由切换；敏感凭据自动脱敏遮罩；具备未保存脏检查、字段级合法性验证与外部并发冲突检测机制。
 - **🌍 动态地理感知与全量拓扑**
   - 直接对接官方 `/network/provider-locations` 生产接口，实时呈现全球 90+ 国家在线住宅节点分布；提供节点数降序、升序及国家拼音/首字母自由排序。
+  - 支持国家、地区和城市精确位置 ID 绑定；地区模式选国家后自动列出可用州／省，无需搜索，城市模式保留搜索和父级地区筛选；池内成员沿用相同位置。请求位置与实测地理数据分开展示。
 - **🔑 五重认证矩阵 (Multi-Authentication Matrix)**
   - 全面覆盖各种注册路径：官方长期 API Key (`urn_...`)、网页 5 分钟临时授权码 (`Auth Code`)、浏览器会话凭据 (`byJwt`)、24 位助记词 (`Seedphrase`) 以及账号密码认证。针对 Google 快捷登录用户提供一键兑换长期 Key 机制。
 - **🔒 防降级标准协议规范 (RFC 1929)**
@@ -270,7 +271,7 @@ docker compose ps
 
 ![控制台概览](docs/assets/dashboard.png)
 
-- **自定义独立端口**：可以任意创建多个网关（如 `31000`, `31001`, `31002`），分别指定不同出口国家或全球最佳链路。
+- **自定义独立端口**：可以创建多个网关（如 `31000`, `31001`, `31002`），分别指定国家、地区、城市或全球最佳链路；每端口默认三个上游，共用账户资源额度。
 - **默认端口与国家核验**：新建默认从 `31000` 起并跳过已保存端口；编辑保持原端口。指定国家时先核对各协议的实际出口国家，再启用候选；跨国或未验证出口不静默接入。卡片分开显示所选国家、实测国家与地理数据来源。
 - **单端口全协议接入**：
   ```text
@@ -279,8 +280,9 @@ docker compose ps
   ```
 - **自动监测与平滑换线**：
   - 默认每 30 秒执行一次双探针健康检查（验证代理鉴权、TLS 握手证书与出口 IP 反查）。
-  - 连续失败达到阈值（默认 3 次）自动触发候选链路申请与全量验证；候选成功后原子切换，旧链路维持 30 秒排空期，老连接不受突发中断影响。
-  - 单网关限频防抖（每小时最多申请 12 次，退避间隔 5~300 秒），防止网络波动造成频繁刷取。
+  - 主用首次确认失败即尝试就绪热备，不等待创建；设为单上游时保留连续失败阈值（默认 3 次）。所有上游失效或尚无热备时仍可能中断。
+  - 卡片显示可用/目标数量、主用、热备、回收中与补池错误；增容后台补齐，缩容保留主用。退休节点 30 秒排空期间仍计入总资源，不计入可用数量。
+  - 账户级每分钟创建/活跃额度与单网关每小时 120 次本地上限共同限制，一般退避 5–300 秒。Free 默认最多 5 个活跃代理，两个三节点网关可能无法全部补齐；健康主用不会因补池额度不足停服。详细额度及位置选择见 [网关使用指南](docs/gateway-guide.md#账户容量与命令行位置)。
 
 ---
 
@@ -428,7 +430,8 @@ docker compose ps
 | **指定控制台端口启动** | `./start_web.sh --web-port 8999` | `python main.py --web --web-port 8999` |
 | **申请全球最佳链路节点** | `./start.sh --mode best` | `python main.py --mode best` |
 | **申请指定国家代理 (如日本)**| `./start.sh --mode country --target JP` | `python main.py --mode country --target JP` |
-| **申请指定城市代理 (如东京)**| `./start.sh --mode city --target Tokyo` | `python main.py --mode city --target Tokyo` |
+| **申请指定城市代理 (如东京)**| `./start.sh --mode city --target Tokyo --country-code JP` | `python main.py --mode city --target Tokyo --country-code JP` |
+| **申请精确地区/城市 ID** | `./start.sh --mode region --location-id LOCATION_ID --country-code US` | `python main.py --mode region --location-id LOCATION_ID --country-code US` |
 | **毫秒级极速分配 (跳过自检)**| `./start.sh --mode best --no-check` | `python main.py --mode best --no-check` |
 | **网页 Auth Code 自动换 Key** | `./start.sh --auth-code 849201` | `python main.py --auth-code 849201` |
 | **为当前账号生成助记词** | `./start.sh --generate-seedphrase` | `python main.py --generate-seedphrase` |
@@ -437,6 +440,8 @@ docker compose ps
 | **查询网页端当前活跃 Proxies**| `./start.sh --list-proxies` | `python main.py --list-proxies` |
 | **一键清空官网 Proxies 抽屉** | `./start.sh --clean` | `python main.py --clean` |
 | **查询全球 90+ 在线国家列表** | `./start.sh --list-countries` | `python main.py --list-countries` |
+
+城市/地区同名搜索不会静默取第一项；有多个匹配时使用官方返回的 `--location-id`。CLI 创建的是单个云端代理，默认三节点主备池由 Web 多网关管理维护。
 
 ---
 

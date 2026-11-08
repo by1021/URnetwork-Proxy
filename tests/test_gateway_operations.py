@@ -14,6 +14,7 @@ class TestGatewayOperations(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.mkdtemp()
         self.client = URClient(api_base='http://127.0.0.1:9999')
         self.client.create_proxy = lambda **kw: {'client_id': 'c_' + kw.get('gateway_id', 'x'), 'host': '127.0.0.1', 'port': 9999}
+        self.client.get_proxy_capabilities = lambda **kw: {'active_limit': 100, 'creates_per_minute': 100, 'known': False}
         self.client.delete_proxy = lambda **kw: True
         self.client.remove_proxy = lambda cid: {'ok': True}
         self.mgr = GatewayManager(self.client, self.tmp + '/gateways.json', probe=fake_probe)
@@ -25,7 +26,7 @@ class TestGatewayOperations(unittest.IsolatedAsyncioTestCase):
 
     async def test_modify_running_gateway(self):
         # Create a gateway
-        g = await self.mgr.create_gateway({'name': 'GW1', 'host': '127.0.0.1', 'port': 20881, 'mode': 'best', 'enabled': True})
+        g = await self.mgr.create_gateway({'name': 'GW1', 'host': '127.0.0.1', 'port': 20881, 'mode': 'best', 'pool_size': 1, 'enabled': True})
         self.assertEqual(g['status'], 'running')
         self.assertEqual(g['name'], 'GW1')
 
@@ -42,7 +43,7 @@ class TestGatewayOperations(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(u2['status'], 'running')
 
     async def test_modify_gateway_port(self):
-        g = await self.mgr.create_gateway({'name': 'GW2', 'host': '127.0.0.1', 'port': 20882, 'mode': 'best', 'enabled': True})
+        g = await self.mgr.create_gateway({'name': 'GW2', 'host': '127.0.0.1', 'port': 20882, 'mode': 'best', 'pool_size': 1, 'enabled': True})
         self.assertEqual(g['status'], 'running')
 
         # Change port to 20883
@@ -51,7 +52,7 @@ class TestGatewayOperations(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(u['status'], 'running')
 
     async def test_delete_and_recreate_same_port(self):
-        g = await self.mgr.create_gateway({'name': 'GW3', 'host': '127.0.0.1', 'port': 20884, 'mode': 'best', 'enabled': True})
+        g = await self.mgr.create_gateway({'name': 'GW3', 'host': '127.0.0.1', 'port': 20884, 'mode': 'best', 'pool_size': 1, 'enabled': True})
         self.assertEqual(g['status'], 'running')
 
         # Delete
@@ -63,7 +64,7 @@ class TestGatewayOperations(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(item['id'] == g['id'] for item in active))
 
         # Recreate on the exact same port
-        g_new = await self.mgr.create_gateway({'name': 'GW3_Recreated', 'host': '127.0.0.1', 'port': 20884, 'mode': 'best', 'enabled': True})
+        g_new = await self.mgr.create_gateway({'name': 'GW3_Recreated', 'host': '127.0.0.1', 'port': 20884, 'mode': 'best', 'pool_size': 1, 'enabled': True})
         self.assertEqual(g_new['status'], 'running')
         self.assertEqual(g_new['port'], 20884)
 
@@ -84,7 +85,7 @@ class TestGatewayOperations(unittest.IsolatedAsyncioTestCase):
             return {'client_id': f'c_{counter}', 'host': '127.0.0.1', 'http_port': 9999, 'socks_port': 9998}
         self.client.create_proxy = make_proxy
 
-        g = await self.mgr.create_gateway({'name': 'GW_Rotate', 'host': '127.0.0.1', 'port': 20886, 'mode': 'best', 'enabled': True})
+        g = await self.mgr.create_gateway({'name': 'GW_Rotate', 'host': '127.0.0.1', 'port': 20886, 'mode': 'best', 'pool_size': 1, 'enabled': True})
         self.assertEqual(g['exit_ip'], '1.1.1.1')
 
         rotated = await self.mgr.rotate_gateway(g['id'])
@@ -112,7 +113,7 @@ class TestGatewayOperations(unittest.IsolatedAsyncioTestCase):
             return {'client_id': f'c_{counter}', 'host': '127.0.0.1', 'http_port': 9999, 'socks_port': 9998}
         self.client.create_proxy = make_proxy
 
-        g = await self.mgr.create_gateway({'name': 'GW_Residential', 'host': '127.0.0.1', 'port': 20887, 'mode': 'best', 'residential_only': True, 'enabled': True})
+        g = await self.mgr.create_gateway({'name': 'GW_Residential', 'host': '127.0.0.1', 'port': 20887, 'mode': 'best', 'pool_size': 1, 'residential_only': True, 'enabled': True})
         self.assertEqual(g['exit_ip'], '67.173.122.141')
         self.assertTrue(g['is_residential'])
         self.assertEqual(g['isp'], 'Comcast')
@@ -122,6 +123,7 @@ class TestWebAppGatewayEndpoints(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.client = URClient(api_base='http://127.0.0.1:9999')
         self.client.create_proxy = lambda **kw: {'client_id': 'c1', 'host': '127.0.0.1', 'port': 9999}
+        self.client.get_proxy_capabilities = lambda **kw: {'active_limit': 100, 'creates_per_minute': 100, 'known': False}
         self.client.delete_proxy = lambda **kw: True
         self.client.remove_proxy = lambda cid: {'ok': True}
         self.app = ManagementApp({'web_username': 'admin', 'web_password': 'password123'}, client=self.client, state_dir=self.tmp)
@@ -135,7 +137,7 @@ class TestWebAppGatewayEndpoints(unittest.TestCase):
     def test_web_api_modify_delete_recreate(self):
         # 1. Create
         created = self.app.dispatch('POST', '/api/gateways', '', {
-            'name': 'WebGW', 'host': '127.0.0.1', 'port': 20885, 'mode': 'best', 'enabled': True, 'interval': 30, 'failures_before_rotate': 3
+            'name': 'WebGW', 'host': '127.0.0.1', 'port': 20885, 'mode': 'best', 'pool_size': 1, 'enabled': True, 'interval': 30, 'failures_before_rotate': 3
         })
         gid = created['id']
         self.assertEqual(created['status'], 'running')
@@ -159,7 +161,7 @@ class TestWebAppGatewayEndpoints(unittest.TestCase):
 
         # 4. Recreate on port 20885
         recreated = self.app.dispatch('POST', '/api/gateways', '', {
-            'name': 'WebGW_Recreated', 'host': '127.0.0.1', 'port': 20885, 'mode': 'best', 'enabled': True, 'interval': 30, 'failures_before_rotate': 3
+            'name': 'WebGW_Recreated', 'host': '127.0.0.1', 'port': 20885, 'mode': 'best', 'pool_size': 1, 'enabled': True, 'interval': 30, 'failures_before_rotate': 3
         })
         self.assertEqual(recreated['name'], 'WebGW_Recreated')
         self.assertEqual(recreated['port'], 20885)

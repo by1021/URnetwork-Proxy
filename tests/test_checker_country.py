@@ -34,6 +34,15 @@ class IpCountryTests(unittest.TestCase):
         self.assertEqual(info.get("country_code"), "US")
         self.assertEqual(info.get("country_source"), "ipinfo.io")
 
+    def test_https_city_and_region_override_plaintext_display_metadata(self):
+        opener = Mock()
+        opener.open.side_effect = [response({"status": "success", "city": "Plain City", "regionName": "Plain Region", "isp": "Fixture ISP"}),
+                                  response({"country": "US", "city": "TLS City", "region": "TLS Region"})]
+        with patch("urllib.request.build_opener", return_value=opener):
+            info = checker.inspect_ip_quality("203.0.113.20")
+        self.assertEqual((info["city"], info["region"]), ("TLS City", "TLS Region"))
+        self.assertEqual(info["isp"], "Fixture ISP")
+
     def test_plain_http_country_cannot_override_https_country(self):
         opener = Mock()
         opener.open.side_effect = [response({"status": "success", "countryCode": "US"}),

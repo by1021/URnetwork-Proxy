@@ -35,3 +35,6 @@ label{display:block;font-size:12px;font-weight:550;margin:16px 0 8px}input,selec
 
 /* Rendered for selection-based copy; readonly avoids opening a mobile keyboard. */
 .clipboard-buffer{position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;font-size:16px}
+
+/* Location and upstream detail controls reuse the existing palette/spacing. */
+.location-search-row{display:flex;gap:8px;align-items:center}.location-search-row input{flex:1;min-width:0}.location-search-row button{flex-shrink:0}#location-picker{margin-top:16px}#location-picker select{width:100%;margin-bottom:8px}.gateway-pool-summary{margin:8px 0;font-weight:600}.gateway-upstreams{margin:8px 0}.gateway-upstreams summary{cursor:pointer}.gateway-upstream-list{padding-left:20px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}.gateway-upstream-list li{margin:8px 0}@media(max-width:540px){.location-search-row{align-items:stretch;flex-direction:column}}

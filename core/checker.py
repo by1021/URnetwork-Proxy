@@ -315,7 +315,8 @@ def inspect_ip_quality(ip: str, timeout: float = 3.0) -> dict:
                 info.update(is_residential=is_res, is_datacenter=is_dc, isp=org,
                             org=org, city=data.get("city", ""), region=data.get("region", ""))
             country = _country_code(data.get("country"))
-            info.update(country_code=country, country_source="ipinfo.io" if country else "")
+            info.update(country_code=country, country_source="ipinfo.io" if country else "",
+                        city=data.get("city", ""), region=data.get("region", ""))
             return _cache_ip_info(ip, info)
     except Exception:
         pass

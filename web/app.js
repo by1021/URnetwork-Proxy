@@ -3,7 +3,7 @@
   'use strict';
 
   // Keep the entry URL's version in index.html in sync when releasing UI fixes.
-  const UI_VERSION = '20261108.3';
+  const UI_VERSION = '20261108.5';
   const POLL_MS = 5000;
   const ACCOUNT_MS = 60000;
   const COUNTRIES_MS = 300000;
@@ -20,7 +20,8 @@
     configSnapshot: null, configDraft: {}, configMode: 'form', configDirty: false, configLoading: false, configRevealed: false,
     gatewayCards: new Map(), eventRows: new Map(), recentRows: new Map(), frames: new Map(),
     refreshed: new Map(), eventOptionsRender: '', rawCountries: [], countrySorts: new Map(),
-    countrySnapshot: '', countryRender: '', countryOptionsRender: ''
+    countrySnapshot: '', countryRender: '', countryOptionsRender: '',
+    locations: [], locationData: null, locationLoading: false, locationRequest: 0
   };
   const credentialNames = { api_key: 'API Key', seedphrase: '助记词', jwt_token: 'JWT Token', auth_code: '授权码', email: '邮箱 / 密码', password: '邮箱 / 密码' };
   const eventMessages = {
@@ -263,6 +264,7 @@
     document.querySelectorAll('[data-country-source], [data-country-updated]').forEach((element) => { element.textContent = '—'; });
     $('event-gateway').replaceChildren(new Option('全部网关', ''));
     $('gateway-country').replaceChildren();
+    state.locations = []; state.locationData = null; state.locationRequest += 1; state.locationLoading = false;
     state.configSnapshot = null; state.configDraft = {}; state.configDirty = false; state.configLoading = false;
     document.querySelectorAll('[data-config-field]').forEach((input) => { input.value = ''; });
     $('config-source').value = '';
@@ -479,7 +481,7 @@
     const header = node('div', 'gateway-card-head');
     const identity = node('div', 'gateway-identity');
     const title = node('h3', '', gateway.name || '未命名网关'); title.title = gateway.name || '未命名网关';
-    const modeLabel = gateway.mode === 'best' ? '自动选择' : regionName(gateway.country_code);
+    const modeLabel = gateway.mode === 'best' ? '自动选择' : [regionName(gateway.country_code), gateway.mode === 'country' ? '' : gateway.location_name || gateway.city || gateway.region].filter(Boolean).join(' · ');
     const resTag = gateway.is_residential ? ' · 🏠 家宽' : (gateway.exit_ip ? ' · 🏢 机房' : '');
     identity.append(title, node('p', '', modeLabel + resTag));
     const [label, tone] = gatewayStatus(gateway);
@@ -490,13 +492,36 @@
     const meta = node('div', 'gateway-meta');
     meta.append(node('span', '', gateway.auto_heal ? `↻ 自动恢复 · ${amount(gateway.interval, 's')}` : '自动恢复关闭'), node('span', '', `失败 ${amount(gateway.failures)} / ${amount(gateway.failures_before_rotate)}`), node('span', '', `换线 ${amount(gateway.rotations)} 次`));
     const lastCheck = node('p', 'gateway-last-check', `上次检查 ${dateText(gateway.last_check)}`);
-    card.append(meta, lastCheck);
+    card.append(meta, lastCheck, gatewayPool(gateway));
     gatewayLiveParts.set(card, { layout: gatewayLayout(gateway), facts: [...facts.querySelectorAll('dd')], meta: [...meta.children], lastCheck });
     const error = eventMessage(state.errors.get(String(gateway.id)) || gateway.last_error);
     if (error) card.append(node('p', 'notice error', error));
     if (busy) card.append(node('p', 'field-hint', '处理中…'));
     card.append(gatewayActions(gateway, busy));
     return card;
+  }
+
+  function gatewayPool(gateway) {
+    const container = node('div', 'gateway-pool');
+    const ready = gateway.pool_ready ?? (gateway.exit_ip ? 1 : 0), target = gateway.pool_size ?? 3;
+    const labels = { ready: '就绪', filling: '补充中', depleted: '暂无可用上游', stopped: '已停止' };
+    container.append(node('p', 'gateway-pool-summary', `上游可用 ${ready}/${target} · ${labels[gateway.pool_status] || '等待状态'}`));
+    if (gateway.pool_error) container.append(node('p', 'notice warning', `补池：${eventMessage(gateway.pool_error)}`));
+    if (Array.isArray(gateway.upstreams) && gateway.upstreams.length) {
+      const details = node('details', 'gateway-upstreams'), list = node('ul', 'gateway-upstream-list');
+      details.append(node('summary', '', '主备线路详情'));
+      for (const member of gateway.upstreams) {
+        const active = member.client_id === gateway.active_client_id;
+        const status = { active: '主用', ready: '热备', suspect: '检查中', recovering: '恢复中', draining: '回收中', failed: '异常' }[member.status] || member.status || '待检测';
+        const line = node('li', '', `${active ? '主用' : status} · ${member.client_id || '—'} · ${member.exit_ip || '待验证'} · ${amount(member.latency_ms, ' ms')}${member.last_error ? ' · ' + eventMessage(member.last_error) : ''}`);
+        line.dataset.state = active ? 'active' : member.status || '';
+        list.append(line);
+      }
+      details.append(list); container.append(details);
+    }
+    if (gateway.mode === 'region' || gateway.mode === 'city') container.append(node('p', 'field-hint',
+      `实测地区 / 城市：${[gateway.exit_region, gateway.exit_city].filter(Boolean).join(' / ') || '待验证'}（位置绑定以官方 ID 为准）`));
+    return container;
   }
 
   function gatewayFacts(gateway) {
@@ -726,19 +751,30 @@
   function renderCountryOptions(preferred) {
     if (document.hidden) return;
     const selected = preferred === undefined ? $('gateway-country').value : preferred;
+    // The catalog may drop or replace an ID while an edit dialog stays open.
+    // Keep identity on the option rather than looking it up in the new catalog.
+    const selectedCode = state.countries.find((country) => String(country.location_id) === String(selected))?.code
+      || (preferred === undefined ? $('gateway-country').selectedOptions[0]?.dataset.countryCode : '');
     const sortVal = $('gateway-country-sort')?.value || $('country-sort')?.value || 'providers-desc';
     const countries = sortedCountries(sortVal).filter((country) => countryMatches(country, $('gateway-country-search').value));
-    const options = countries.map((country) => [`${countryName(country)} (${country.code}) · ${amount(country.providers)} 节点`, String(country.location_id)]);
-    const current = state.editing;
-    if (current?.mode === 'country' && current.location_id && !state.countries.some((country) => String(country.location_id) === String(current.location_id)) && !$('gateway-country-search').value) {
-      options.push([`${regionName(current.country_code)} (${current.country_code}) · 已保存，暂不可用`, String(current.location_id)]);
+    const options = countries.map((country) => [`${countryName(country)} (${country.code}) · ${amount(country.providers)} 节点`, String(country.location_id), country.code]);
+    const current = savedGatewayCountry();
+    if (current && !state.countries.some((country) => country.code === current.code) && !$('gateway-country-search').value) {
+      options.push([`${regionName(current.code)} (${current.code}) · 已保存，暂不可用`, current.location_id, current.code]);
     }
     const signature = JSON.stringify(options);
     if (signature !== state.countryOptionsRender) {
       state.countryOptionsRender = signature;
-      $('gateway-country').replaceChildren(new Option('请选择国家 / 地区', ''), ...options.map(([label, value]) => new Option(label, value)));
+      $('gateway-country').replaceChildren(new Option('请选择国家 / 地区', ''), ...options.map(([label, value, code]) => {
+        const option = new Option(label, value); option.dataset.countryCode = code; return option;
+      }));
     }
-    $('gateway-country').value = options.some(([, value]) => value === String(selected)) ? String(selected) : '';
+    const code = selectedCode || (current?.location_id === String(selected) ? current.code : '');
+    const replacement = options.find(([, , countryCode]) => countryCode === code);
+    $('gateway-country').value = options.some(([, value]) => value === String(selected)) ? String(selected) : replacement?.[1] || '';
+    if (selected && !$('gateway-country').value && $('gateway-dialog').open) {
+      resetLocations();
+    }
     const data = state.countryData;
     $('country-picker-note').textContent = data ? `${countries.length} 个匹配地区${data.stale ? ' · 缓存已过期' : ''}` : '正在获取地区，请稍候。';
     message('country-picker-error', data?.error ? safeMessage(data.error) : '');
@@ -759,22 +795,148 @@
     if ($('gateway-username')) $('gateway-username').value = gateway?.username || '';
     if ($('gateway-password')) $('gateway-password').value = gateway?.password || '';
     $('gateway-mode').value = gateway?.mode || 'country';
+    $('gateway-pool-size').value = gateway?.pool_size ?? 3;
+    state.locationRequest += 1; state.locationLoading = false; state.locationData = null;
+    $('gateway-location-search').disabled = false;
+    const savedLocation = savedGatewayLocation();
+    state.locations = savedLocation ? [savedLocation] : [];
+    $('gateway-location-query').value = gateway?.location_name || gateway?.city || gateway?.region || '';
+    $('gateway-region-filter').replaceChildren(new Option('全部地区', ''));
+    renderLocationOptions(gateway?.location_id || '');
     if ($('gateway-residential-only')) $('gateway-residential-only').checked = gateway?.residential_only ?? true;
     $('gateway-auto-heal').checked = gateway?.auto_heal ?? true;
     $('gateway-interval').value = gateway?.interval ?? 30;
     $('gateway-failures').value = gateway?.failures_before_rotate ?? 3;
-    ['gateway-error', 'port-error', 'country-picker-error'].forEach((id) => message(id, ''));
+    ['gateway-error', 'port-error', 'country-picker-error', 'location-picker-error'].forEach((id) => message(id, ''));
     $('gateway-port').removeAttribute('aria-invalid');
-    renderCountryOptions(gateway?.location_id || ''); syncGatewayMode();
+    renderCountryOptions(gateway?.mode === 'country' ? gateway.location_id : state.countries.find((c) => c.code === gateway?.country_code)?.location_id || savedGatewayCountry()?.location_id || ''); syncGatewayMode();
     $('gateway-dialog').showModal(); $('gateway-name').focus();
+    loadGatewayRegions();
     if (!state.countryData) loadCountries();
   }
 
-  function syncGatewayMode() {
-    const best = $('gateway-mode').value === 'best';
+  function resetLocations() {
+    state.locationRequest += 1; state.locationLoading = false;
+    state.locations = []; state.locationData = null;
+    $('gateway-region-filter').replaceChildren(new Option('全部地区', ''));
+    $('gateway-location-search').disabled = false;
+    $('gateway-save').disabled = state.savingGateway;
+    message('location-picker-error', '');
+    renderLocationOptions('');
+  }
+
+  function syncGatewayMode(reset = false) {
+    const mode = $('gateway-mode').value, best = mode === 'best';
     $('country-picker').hidden = best;
     $('gateway-country').disabled = best;
     $('gateway-country-search').disabled = best;
+    $('location-picker').hidden = !['region', 'city'].includes(mode);
+    $('location-region-filter').hidden = mode !== 'city';
+    $('location-search-controls').hidden = mode !== 'city';
+    $('location-region-controls').hidden = mode !== 'region';
+    $('gateway-location-label').textContent = mode === 'region' ? '选择可用地区（州 / 省）' : '选择精确城市';
+    if (reset) resetLocations();
+    else renderLocationOptions();
+    if (reset) loadGatewayRegions();
+  }
+
+  function selectedGatewayCountry() {
+    const selected = $('gateway-country').value;
+    const saved = savedGatewayCountry();
+    return state.countries.find((country) => String(country.location_id) === selected)
+      || (saved?.location_id === selected ? saved : null);
+  }
+
+  function savedGatewayCountry() {
+    const current = state.editing, mode = $('gateway-mode').value;
+    if (!current?.country_code || mode === 'best' || (mode === 'country' && current.mode !== 'country')) return null;
+    return { code: current.country_code, location_id: current.mode === 'country' ? String(current.location_id) : `saved-country:${current.country_code}` };
+  }
+
+  function savedGatewayLocation() {
+    const current = state.editing;
+    if (!current || !['city', 'region'].includes(current.mode) || current.mode !== $('gateway-mode').value) return null;
+    return { location_id: current.location_id, location_type: current.mode, country_code: current.country_code,
+      name: current.location_name || current.city || current.region || current.location_id,
+      city: current.city || '', region: current.region || '', region_location_id: current.region_location_id || '', current: true };
+  }
+
+  function renderLocationOptions(preferred) {
+    const region = $('gateway-mode').value === 'region', country = selectedGatewayCountry();
+    const selected = preferred ?? $('gateway-location').value, parent = $('gateway-region-filter').value;
+    const records = state.locations.filter((loc) => !parent || loc.region_location_id === parent);
+    const empty = region ? country ? '当前国家无可用地区，请刷新或更换国家' : '请先选择国家' : '无匹配位置，请搜索或更换关键词';
+    $('gateway-location').replaceChildren(new Option(state.locationLoading ? region ? '正在加载地区…' : '正在搜索…' : records.length ? '请选择具体位置' : empty, ''),
+      ...records.map((loc) => new Option(`${loc.name}${loc.region && loc.region !== loc.name ? ' · ' + loc.region : ''} (${loc.country_code})${loc.current ? ' · 当前绑定' : ' · 节点 ' + loc.provider_count}`, loc.location_id)));
+    $('gateway-location').value = records.some((loc) => loc.location_id === selected) ? selected : '';
+    $('gateway-location').setAttribute('aria-busy', String(state.locationLoading));
+    $('gateway-regions-refresh').disabled = !country || state.locationLoading || state.savingGateway;
+    $('gateway-location-search').disabled = state.locationLoading || state.savingGateway;
+    if (region) {
+      $('location-picker-note').textContent = !country ? '请先选择国家，随后自动显示可用地区。' : state.locationLoading
+        ? '正在加载该国家的官方可用地区…' : state.locationData?.stale
+          ? '地区列表加载失败或已过期，显示上次结果；请刷新地区后再选择。当前绑定可保持不变。'
+          : state.locationData ? `${records.filter((loc) => loc.provider_count > 0).length} 个可用地区 · 来源 ${state.locationData.source} · ${dateText(state.locationData.updated_at)}`
+            : '选择国家后自动加载可用地区；当前绑定可保持不变。';
+      return;
+    }
+    $('location-picker-note').textContent = state.locationLoading ? '正在查询官方位置…' : state.locationData?.stale
+      ? '位置快照已过期，显示上次结果；请重新搜索后再选择。'
+      : state.locationData ? `${records.length} 个匹配位置 · 来源 ${state.locationData.source} · ${dateText(state.locationData.updated_at)}`
+        : '先选择国家，再搜索并选择具体位置；当前绑定可保持不变。';
+  }
+
+  function loadGatewayRegions(refresh = false) {
+    if ($('gateway-mode').value === 'region' && selectedGatewayCountry() && $('gateway-dialog').open) {
+      searchGatewayLocations({ refresh });
+    }
+  }
+
+  async function searchGatewayLocations({ refresh = true } = {}) {
+    if (state.locationLoading || state.savingGateway) return;
+    const country = selectedGatewayCountry(), mode = $('gateway-mode').value;
+    if (!['region', 'city'].includes(mode)) return;
+    if (!country) { message('location-picker-error', '请先选择出口国家。'); return; }
+    const query = mode === 'region' ? country.name || regionName(country.code, 'en') : $('gateway-location-query').value.trim();
+    if (!query) { message('location-picker-error', '请输入城市或地区关键词。'); return; }
+    const request = ++state.locationRequest;
+    state.locationLoading = true; $('gateway-location-search').disabled = true; $('gateway-save').disabled = true;
+    message('location-picker-error', ''); renderLocationOptions();
+    try {
+      const params = new URLSearchParams({ query, country_code: country.code, type: mode, refresh: refresh ? '1' : '0' });
+      const data = await api(`/api/locations?${params}`);
+      if (request !== state.locationRequest || !$('gateway-dialog').open) return;
+      if (!Array.isArray(data.locations)) throw new Error('位置列表格式异常，请重试。');
+      const selected = $('gateway-location').value, parent = $('gateway-region-filter').value;
+      state.locations = mode === 'region' ? data.locations.filter((loc) => loc.location_type === 'region'
+        && loc.country_code === country.code && Number.isInteger(loc.provider_count) && loc.provider_count > 0) : [...data.locations];
+      state.locationData = data;
+      const current = savedGatewayLocation();
+      if (current?.country_code === country.code) {
+        const index = state.locations.findIndex((loc) => loc.location_id === current.location_id);
+        if (index < 0) state.locations.push(current);
+        else state.locations[index] = { ...state.locations[index], ...current };
+      }
+      const parents = new Map(state.locations.filter((loc) => loc.region_location_id).map((loc) => [loc.region_location_id, loc.region || loc.name]));
+      $('gateway-region-filter').replaceChildren(new Option('全部地区', ''), ...[...parents].map(([id, name]) => new Option(name, id)));
+      if (parents.has(parent)) $('gateway-region-filter').value = parent;
+      if (data.error) message('location-picker-error', data.error);
+      else if (!(mode === 'region' ? state.locations.some((loc) => loc.provider_count > 0) : data.locations.length)) {
+        message('location-picker-error', mode === 'region'
+          ? '该国家当前无可用地区，请刷新或更换国家；不会自动改为全国出口。'
+          : '该国家下无匹配位置，请修改关键词；不会自动改为全国出口。');
+      }
+      renderLocationOptions(selected);
+    } catch (error) {
+      if (request === state.locationRequest && !isCancelled(error)) {
+        state.locationData = { ...(state.locationData || {}), stale: true }; message('location-picker-error', error.message);
+      }
+    } finally {
+      if (request === state.locationRequest) {
+        state.locationLoading = false; $('gateway-location-search').disabled = false; $('gateway-save').disabled = state.savingGateway;
+        renderLocationOptions();
+      }
+    }
   }
 
   function gatewayPayload() {
@@ -798,15 +960,23 @@
     const failures = Number($('gateway-failures').value);
     if (!Number.isInteger(interval) || interval < 5 || interval > 3600) throw new Error('检查间隔必须是 5–3600 秒的整数。');
     if (!Number.isInteger(failures) || failures < 1 || failures > 100) throw new Error('连续失败阈值必须是 1–100 的整数。');
-    const mode = $('gateway-mode').value;
-    let country = null;
-    if (mode === 'country') {
+    const mode = $('gateway-mode').value, poolSize = Number($('gateway-pool-size').value);
+    if (!Number.isInteger(poolSize) || poolSize < 1 || poolSize > 20) throw new Error('上游代理数量须为 1–20 的整数。');
+    let country = null, location = null;
+    if (mode !== 'best') {
       const selected = $('gateway-country').value;
-      country = state.countries.find((item) => String(item.location_id) === selected);
-      if (!country && selected && selected === String(state.editing?.location_id)) country = { code: state.editing.country_code, location_id: state.editing.location_id };
+      country = selectedGatewayCountry();
       if (!country || !selected) { message('country-picker-error', '请选择国家 / 地区；若列表为空，请刷新位置数据。'); $('gateway-country').focus(); return null; }
     }
-    return { name, host, port, mode, country_code: country?.code || '', location_id: country?.location_id || '', auto_heal: $('gateway-auto-heal').checked, residential_only: Boolean($('gateway-residential-only')?.checked ?? true), interval, failures_before_rotate: failures, enabled: state.editing?.enabled ?? true, username, password };
+    if (['region', 'city'].includes(mode)) {
+      location = state.locations.find((loc) => loc.location_id === $('gateway-location').value && loc.country_code === country?.code);
+      if (!location || state.locationLoading || (state.locationData?.stale && !location.current)) {
+        message('location-picker-error', mode === 'region'
+          ? '请选择该国家下的可用地区；过期数据需刷新地区后再选择。'
+          : '请搜索并选择该国家下的精确位置；过期数据需重新搜索。'); $('gateway-location').focus(); return null;
+      }
+    }
+    return { name, host, port, mode, pool_size: poolSize, country_code: country?.code || '', location_id: location?.location_id || country?.location_id || '', location_name: location?.name || '', region: location?.region || '', city: location?.city || '', region_location_id: location?.region_location_id || '', auto_heal: $('gateway-auto-heal').checked, residential_only: Boolean($('gateway-residential-only')?.checked ?? true), interval, failures_before_rotate: failures, enabled: state.editing?.enabled ?? true, username, password };
   }
 
   async function saveGateway(event) {
@@ -1259,7 +1429,12 @@
     $('gateway-form').addEventListener('submit', saveGateway);
     ['gateway-close', 'gateway-cancel'].forEach((id) => $(id).addEventListener('click', () => { if (!state.savingGateway) $('gateway-dialog').close(); }));
     $('gateway-dialog').addEventListener('cancel', (event) => { if (state.savingGateway) event.preventDefault(); });
-    $('gateway-mode').addEventListener('change', syncGatewayMode);
+    $('gateway-mode').addEventListener('change', () => syncGatewayMode(true));
+    $('gateway-country').addEventListener('change', () => { resetLocations(); loadGatewayRegions(); });
+    $('gateway-location-search').addEventListener('click', searchGatewayLocations);
+    $('gateway-regions-refresh').addEventListener('click', () => loadGatewayRegions(true));
+    $('gateway-region-filter').addEventListener('change', () => renderLocationOptions());
+    $('gateway-location-query').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); searchGatewayLocations(); } });
     $('gateway-country-search').addEventListener('input', () => scheduleRender('country-options', renderCountryOptions));
     $('gateway-search').addEventListener('input', () => scheduleRender('gateways', renderGateways));
     $('gateway-filter').addEventListener('change', renderGateways);

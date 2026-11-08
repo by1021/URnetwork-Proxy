@@ -62,7 +62,7 @@ class GatewayCountryTests(unittest.IsolatedAsyncioTestCase):
 
     async def create(self, **kwargs):
         return await self.mgr.create_gateway({"name": "US fixture", "mode": "country", "country_code": "US",
-                                              "location_id": "us-country", "enabled": True, **kwargs})
+                                              "location_id": "us-country", "enabled": True, "pool_size": 1, **kwargs})
 
     async def test_same_country_is_exposed_separately_from_requested_country(self):
         gateway = await self.create()

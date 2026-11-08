@@ -125,8 +125,8 @@ def validate_config(cfg):
     for key, minimum, maximum in (("timeout_seconds", 1, 300), ("web_port", 1, 65535)):
         if type(result[key]) is not int or not minimum <= result[key] <= maximum:
             raise ConfigError(f"{key} 须为 {minimum}–{maximum} 之间的整数")
-    if result["default_mode"] not in ("best", "country", "city"):
-        raise ConfigError("default_mode 须为 best、country 或 city")
+    if result["default_mode"] not in ("best", "country", "region", "city"):
+        raise ConfigError("default_mode 须为 best、country、region 或 city")
     country = result["default_country"]
     if not isinstance(country, str) or not re.fullmatch(r"[A-Za-z]{2}", country):
         raise ConfigError("default_country 须为两个英文字母的国家代码")

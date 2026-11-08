@@ -10,13 +10,45 @@ import json
 import base64
 import threading
 import urllib.error
-from .locator import search_cities
+import time
+import re
+from datetime import datetime, timezone
+
+API_ERROR_CODES = frozenset(('no_unique_supply', 'client_limit_exceeded', 'rate_limited',
+    'upgrade_required', 'authentication', 'invalid_location', 'rejected'))
+
+
+def _api_error_code(error: object) -> str:
+    if isinstance(error, dict):
+        code = error.get('code')
+        if isinstance(code, str) and code in API_ERROR_CODES:
+            return code
+        return next((key for key in ('no_unique_supply', 'rate_limited', 'client_limit_exceeded', 'upgrade_required')
+                     if error.get(key) is True), 'rejected')
+    return error if isinstance(error, str) and error in API_ERROR_CODES else 'rejected'
+
+
+def _retry_after(value: object) -> int:
+    try:
+        return min(3600, max(0, int(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _proxy_exit(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    return {key: str(value[key])[:256] for key in ('exit_id', 'country_code', 'region', 'city',
+        'exit_since', 'state', 'state_reason', 'replace_mode') if isinstance(value.get(key), str)}
+
 
 class ApiError(RuntimeError):
     """Sanitized control-plane failure; never reflect credentials/remote bodies."""
-    def __init__(self, status=0, kind="request"):
+    def __init__(self, status=0, kind="request", *, code="", retry_after=0):
         self.status = status
         self.kind = kind
+        self.code = code if code in API_ERROR_CODES else ""
+        self.retry_after = _retry_after(retry_after)
         super().__init__(f"URnetwork API {kind} (HTTP {status})")
 
 
@@ -46,6 +78,7 @@ class URClient:
         self.jwt_payload = {}
         self.network_info = {}
         self.auth_method = "none"
+        self._capability_cache = None
 
     def _request(self, path, method="GET", body=None, auth=True):
         with self._lock:
@@ -68,11 +101,19 @@ class URClient:
                     if not isinstance(result, dict):
                         raise ApiError(0, "invalid-response")
                     if result.get("error"):
-                        raise ApiError(200, "rejected")
+                        raise ApiError(200, "rejected", code=_api_error_code(result["error"]))
                     return result
                 except urllib.error.HTTPError as exc:
                     status = exc.code
-                    exc.close()
+                    retry_after = _retry_after(exc.headers.get('Retry-After'))
+                    code = ''
+                    try:
+                        error_body = json.loads(exc.read(8192))
+                        code = _api_error_code(error_body.get('error')) if isinstance(error_body, dict) else ''
+                    except (ValueError, OSError):
+                        code = ''
+                    finally:
+                        exc.close()
                     renewable = not self.api_key and not self.jwt_token and bool(self.seedphrase or (self.email and self.password))
                     if status == 401 and auth and not self._resolving:
                         self.jwt = None
@@ -80,7 +121,8 @@ class URClient:
                         if method == "GET" and attempt == 0 and renewable:
                             self.login()
                             continue
-                    raise ApiError(status, "authentication" if status in (401, 403) else "request") from None
+                    raise ApiError(status, "authentication" if status in (401, 403) else "request",
+                                   code=code, retry_after=retry_after) from None
                 except (OSError, ValueError) as exc:
                     raise ApiError(0, type(exc).__name__) from None
 
@@ -221,9 +263,43 @@ class URClient:
         res = self._request("/auth/regenerate-seedphrase", method="POST", body={})
         return res.get("seedphrase")
 
+    def _capabilities_from_balance(self, balance: dict) -> dict:
+        """A Pro entitlement is an in-window live balance, not an opaque key claim."""
+        now = datetime.now(timezone.utc)
+        is_pro = False
+        balances = balance.get('active_transfer_balances')
+        if isinstance(balances, list):
+            for entry in balances:
+                if not isinstance(entry, dict) or entry.get('pro') is not True:
+                    continue
+                try:
+                    start = datetime.fromisoformat(entry['start_time'].replace('Z', '+00:00'))
+                    end = datetime.fromisoformat(entry['end_time'].replace('Z', '+00:00'))
+                    if start.tzinfo is None or end.tzinfo is None:
+                        continue
+                    is_pro = is_pro or start <= now < end
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    continue
+        return dict(is_pro=is_pro, unique_exit=is_pro, active_limit=1000 if is_pro else 5,
+                    creates_per_minute=20 if is_pro else 5, known=isinstance(balances, list))
+
+    def get_proxy_capabilities(self, refresh: bool = False) -> dict:
+        """Read live plan capabilities with bounded caching and conservative unknowns."""
+        with self._lock:
+            now = time.monotonic()
+            if not refresh and self._capability_cache and now - self._capability_cache[0] < 60:
+                return dict(self._capability_cache[1])
+            try:
+                result = self._capabilities_from_balance(self._request('/subscription/balance'))
+            except ApiError:
+                result = dict(is_pro=False, unique_exit=False, active_limit=5, creates_per_minute=5, known=False)
+            self._capability_cache = (time.monotonic(), result)
+            return dict(result)
+
     def get_account_status(self):
         """查询账户每日配额与使用量信息"""
         balance_data = self._request("/subscription/balance", method="GET")
+        self._capability_cache = (time.monotonic(), self._capabilities_from_balance(balance_data))
         start_bytes = balance_data.get("start_balance_byte_count", 0)
         curr_bytes = balance_data.get("balance_byte_count", 0)
         
@@ -268,6 +344,8 @@ class URClient:
                 "https_port": pc.get("https_proxy_port"),
                 "auth_token": pc.get("auth_token"),
                 "create_time": c.get("create_time"),
+                "exit": _proxy_exit(c.get("exit")),
+                "unique_exit": bool(c.get("exit")),
                 "raw": c
             })
         return formatted
@@ -321,8 +399,9 @@ class URClient:
     def create_proxy(self, mode="best", target="", protocol="socks", location_id=None, gateway_name="", gateway_id="", residential_only=True, **kwargs):
         """
         分配代理节点
-        mode: 'best' | 'country' | 'city'
-        target: 国家代码（如 'US', 'JP'）或城市名（如 'Tokyo'）
+        mode: 'best' | 'country' | 'region' | 'city'
+        target: 精确 location_id 绑定时为国家代码；未绑定的 CLI 城市/地区搜索词
+        country_code kwarg: 未绑定的地区/城市搜索可按两位国家代码筛选
         protocol: 'socks' | 'https' | 'wireguard' (影响官方网页端 UI 识别与标注)
         """
         init_state = {}
@@ -378,24 +457,34 @@ class URClient:
                 target_desc = f"指定国家/地区 [{country_code}]"
                 loc_label = country_code
             init_state["country_code"] = country_code.lower()
-        elif mode == "city":
-            cities = search_cities(target, client=self)
-            if not cities:
-                raise ValueError(f"城市 {target} 当前无可用位置；保留原绑定，不降级国家")
+        elif mode in ('city', 'region'):
+            country_code = (target or '').strip().upper()
+            if location_id:
+                if not re.fullmatch(r'[A-Z]{2}', country_code):
+                    raise ValueError('精确城市/地区绑定须提供两位国家代码')
+                loc = dict(location_id=location_id, name=kwargs.get('location_name') or
+                           kwargs.get(mode) or location_id, country_code=country_code,
+                           location_type=mode, region=kwargs.get('region', ''), city=kwargs.get('city', ''),
+                           region_location_id=kwargs.get('region_location_id', ''))
             else:
-                loc = cities[0]
-                target_desc = f"指定城市 [{loc.get('name')}, {loc.get('country')}] (节点数: {loc.get('provider_count')})"
-                loc_label = loc.get("name")
-                init_state = {
-                    "location": {
-                        "connect_location_id": {
-                            "location_id": loc["location_id"]
-                        },
-                        "name": loc.get("name"),
-                        "country_code": loc.get("country_code"),
-                        "location_type": loc.get("location_type", "city")
-                    }
-                }
+                from .locator import search_locations
+                locations = search_locations(target, client=self, location_type=mode,
+                                             country_code=kwargs.get('country_code', ''))
+                exact = [loc for loc in locations if loc.get('name', '').casefold() == target.strip().casefold()]
+                matches = exact or locations
+                if len(matches) != 1:
+                    raise ValueError('位置为空或匹配多个城市/地区，请选择精确 location_id 和国家代码')
+                loc = matches[0]
+                location_id = loc['location_id']
+                country_code = str(loc.get('country_code', '')).upper()
+            location_id = loc['location_id']
+            loc_label = f"{country_code}-{loc.get('name')}"
+            target_desc = f"指定{'城市' if mode == 'city' else '地区'} [{loc.get('name')}, {country_code}]"
+            init_state = {'country_code': country_code.lower(), 'location': {
+                'connect_location_id': {'location_id': location_id}, 'name': loc.get('name'),
+                'country_code': country_code.lower(), 'location_type': mode,
+                'region': loc.get('region', ''), 'city': loc.get('city', ''),
+                'region_location_id': loc.get('region_location_id', '')}}
         else:
             raise ValueError(f"未知策略模式: {mode}")
 
@@ -406,7 +495,7 @@ class URClient:
         spec_suffix = f" {tag}" if tag else ""
         device_spec = f"ur.io proxy {proto_clean}{spec_suffix}"
 
-        is_pro = bool(self.jwt_payload.get("pro", False))
+        is_pro = self.get_proxy_capabilities()["is_pro"]
         proxy_config = {
             "enable_http": True,
             "enable_socks": True,
@@ -416,7 +505,7 @@ class URClient:
         }
         if is_pro:
             proxy_config["unique_exit"] = True
-            proxy_config["unique_exit_replace"] = "manual"
+            proxy_config["unique_exit_replace"] = "auto"
 
         payload = {
             "description": description,
@@ -426,19 +515,10 @@ class URClient:
             "locale": "zh-CN"
         }
 
-        try:
-            res = self._request("/network/auth-client", method="POST", body=payload)
-        except Exception as exc:
-            if is_pro and "unique" in str(exc).lower():
-                proxy_config.pop("unique_exit", None)
-                proxy_config.pop("unique_exit_replace", None)
-                res = self._request("/network/auth-client", method="POST", body=payload)
-            else:
-                raise
+        res = self._request('/network/auth-client', method='POST', body=payload)
         p = res.get("proxy_config_result")
         if not p:
-            err = res.get("error", {})
-            raise RuntimeError(f"分配代理节点失败: {err.get('message', res)}")
+            raise ApiError(200, "invalid-response")
 
         host = p["proxy_host"]
         token = p["auth_token"]
@@ -450,6 +530,9 @@ class URClient:
 
         return {
             "mode": mode,
+            "location_type": init_state.get("location", {}).get("location_type", "best"),
+            "exit": _proxy_exit(p.get("exit")),
+            "unique_exit": is_pro,
             "location_id": location_id,
             "country_code": country_code,
             "target_desc": target_desc,

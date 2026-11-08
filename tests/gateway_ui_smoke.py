@@ -30,6 +30,14 @@ def main():
         client.api_base = config["api_base_url"]
         client._lock = threading.RLock()
         client.get_account_status = lambda: {}
+        # Country/UI coverage should not exhaust an unrelated free-tier budget.
+        # Keep the production quota/listing paths, with explicit fixture capacity.
+        client.get_proxy_capabilities = lambda: {
+            'is_pro': True, 'unique_exit': True, 'active_limit': 1000,
+            'creates_per_minute': 20, 'known': True}
+        client.list_proxies = lambda: [
+            {'client_id': f'fixture-{index+1}'} for index in range(len(client.creates))
+            if f'fixture-{index+1}' not in client.removed]
         samples = [sample("VN"), sample("US", "203.0.113.2")]
 
         async def probe(upstream):
@@ -65,6 +73,7 @@ def main():
                 page.get_by_role("button", name="新建网关", exact=True).click()
                 expect(page.get_by_label("本地端口", exact=True)).to_have_value("31001")
                 page.get_by_label("网关名称", exact=True).fill("US verified fixture")
+                page.get_by_label("上游代理数量", exact=True).fill("1")
                 page.get_by_label("本地端口", exact=True).fill("31000")
                 page.get_by_role("button", name="创建并启动", exact=True).click()
                 expect(page.locator("#port-error")).to_contain_text("已被其他网关使用")
@@ -114,6 +123,7 @@ def main():
                 page.get_by_role("button", name="新建网关", exact=True).click()
                 expect(page.get_by_label("本地端口", exact=True)).to_have_value("31002")
                 page.get_by_label("网关名称", exact=True).fill("US rejected fixture")
+                page.get_by_label("上游代理数量", exact=True).fill("1")
                 page.get_by_label("选择出口国家或地区", exact=True).select_option("us-country")
                 page.get_by_role("button", name="创建并启动", exact=True).click()
                 expect(page.locator("#gateway-dialog")).not_to_be_visible()

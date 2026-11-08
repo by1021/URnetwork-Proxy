@@ -13,6 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import ipaddress
+import inspect
 import json
 import math
 import os
@@ -31,7 +32,9 @@ DRAIN_SECONDS = 30.0
 BACKOFF_MIN = 5.0
 BACKOFF_MAX = 300.0
 HOURLY_CREATES = 120
-MAX_OWNED_PER_GATEWAY = 2
+MAX_ORPHAN_OWNED = 20
+CAPABILITY_TTL = 60.0
+REPAIR_GRACE_SECONDS = 150.0
 PROBE_TIMEOUT = 35.0
 EVENT_LIMIT = 1000
 CONFIG_DEFAULTS = {
@@ -39,6 +42,7 @@ CONFIG_DEFAULTS = {
     "country_code": "", "location_id": None, "enabled": False,
     "auto_heal": True, "interval": 30, "failures_before_rotate": 3,
     "residential_only": True,
+    "pool_size": 3, "location_name": "", "region": "", "city": "", "region_location_id": "",
 }
 
 
@@ -91,7 +95,8 @@ def _validate(data: dict[str, Any], base: dict[str, Any] | None = None) -> dict[
     cfg.update(data)
     cfg.setdefault("username", "")
     cfg.setdefault("password", "")
-    for key in ("name", "host", "country_code", "mode", "username", "password"):
+    for key in ("name", "host", "country_code", "mode", "username", "password",
+                "location_name", "region", "city", "region_location_id"):
         if not isinstance(cfg.get(key, ""), str):
             raise GatewayValidationError(key, f"{key} 必须是文本")
     if not cfg["name"].strip() or len(cfg["name"]) > 128:
@@ -111,23 +116,30 @@ def _validate(data: dict[str, Any], base: dict[str, Any] | None = None) -> dict[
             raise GatewayValidationError("host", "监听地址须为回环 IP、0.0.0.0 或 ::")
         cfg["host"] = str(address)
     for key, minimum, maximum in (("port", 1, 65535), ("interval", 5, 3600),
-                                  ("failures_before_rotate", 1, 100)):
+                                  ("failures_before_rotate", 1, 100), ("pool_size", 1, 20)):
         if type(cfg[key]) is not int or not minimum <= cfg[key] <= maximum:
-            label = {"port": "端口", "interval": "检测间隔（秒）", "failures_before_rotate": "连续失败阈值"}[key]
+            label = {"port": "端口", "interval": "检测间隔（秒）", "failures_before_rotate": "连续失败阈值",
+                     "pool_size": "代理池大小"}[key]
             raise GatewayValidationError(key, f"{label}须为 {minimum}–{maximum} 的整数")
     for key in ("enabled", "auto_heal", "residential_only"):
         if type(cfg[key]) is not bool:
             raise GatewayValidationError(key, f"{key} 必须是布尔值")
     cfg["country_code"] = cfg["country_code"].strip().upper()
-    if cfg["mode"] not in ("best", "country"):
-        raise GatewayValidationError("mode", "出口模式须为自动选择或指定国家")
-    if cfg["mode"] == "country":
+    if cfg["mode"] not in ("best", "country", "region", "city"):
+        raise GatewayValidationError("mode", "出口模式须为自动选择、国家、地区或城市")
+    if cfg["mode"] != "best":
         if not re.fullmatch(r"[A-Z]{2}", cfg["country_code"]):
             raise GatewayValidationError("country_code", "指定国家须提供两位国家代码")
         if not isinstance(cfg["location_id"], str) or not cfg["location_id"].strip():
             raise GatewayValidationError("location_id", "请选择国家 / 地区，位置标识不能为空")
     else:
         cfg["country_code"], cfg["location_id"] = "", None
+        for key in ("location_name", "region", "city", "region_location_id"):
+            cfg[key] = ""
+    for key in ("location_name", "region", "city", "region_location_id"):
+        cfg[key] = cfg[key].strip()
+        if len(cfg[key]) > 256:
+            raise GatewayValidationError(key, "位置信息长度超出限制")
     if cfg["location_id"] is not None and len(cfg["location_id"]) > 256:
         raise GatewayValidationError("location_id", "国家位置标识长度超出限制")
     if bool(cfg.get("username")) != bool(cfg.get("password")):
@@ -139,12 +151,31 @@ def _validate(data: dict[str, Any], base: dict[str, Any] | None = None) -> dict[
 
 
 @dataclass
+class _Member:
+    upstream: dict[str, Any]
+    result: dict[str, Any]
+    state: str = "ready"
+    failures: int = 0
+    last_check: str = field(default_factory=_timestamp)
+    error: str = ""
+    failed_at: float = 0.0
+    next_repair: float = 0.0
+
+
+@dataclass
 class _Gateway:
     id: str
     config: dict[str, Any]
     created_at: str = field(default_factory=_timestamp)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     upstream: dict[str, Any] | None = None
+    members: dict[str, _Member] = field(default_factory=dict)
+    check_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    bind_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    filler: asyncio.Task[Any] | None = None
+    pool_error: str = ""
+    exit_city: str = ""
+    exit_region: str = ""
     relay: Any = None
     auth_missing: bool = False
     status: str = "stopped"
@@ -202,10 +233,17 @@ class GatewayManager:
         self._global_attempts = 0
         self._inflight_creates = 0
         self._global_next_create = 0.0
+        self._rejection_version = 0
+        self._account_creates: deque[float] = deque()
+        self._capabilities: dict[str, Any] = {"active_limit": 5, "creates_per_minute": 5, "known": False}
+        self._capability_client = None
+        self._capability_due = 0.0
+        self._external_owned = 0
         self._offline = False
         self._control_due = 0.0
         self._control_attempts = 0
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._cleanup_worker: asyncio.Task[Any] | None = None
         self._worker: asyncio.Task[Any] | None = None
         self._close_task: asyncio.Task[Any] | None = None
         self._shutdown = asyncio.Event()
@@ -250,6 +288,22 @@ class GatewayManager:
                       connections=int(g.relay.connections) if g.relay else 0,
                       username=g.config.get("username", ""),
                       password=g.config.get("password", ""))
+        ready = sum(member.state == "ready" for member in g.members.values())
+        active_id = g.upstream.get("client_id", "") if g.upstream else ""
+        rows = [dict(client_id=cid, status="active" if cid == active_id and member.state == "ready" else member.state,
+                     exit_ip=member.result.get("exit_ip", ""), latency_ms=member.result.get("latency_ms", 0),
+                     last_check=member.last_check, last_error=member.error,
+                     country_code=member.result.get("country_code", ""),
+                     city=member.result.get("city", ""), region=member.result.get("region", ""))
+                for cid, member in g.members.items()]
+        rows.extend(dict(client_id=cid, status="draining", last_error="owned_cleanup_pending" if item.attempts else "")
+                    for cid, item in self._owned.items() if item.gateway_id == g.id and cid not in g.members)
+        result.update(pool_ready=ready, pool_total=sum(item.gateway_id == g.id for item in self._owned.values()),
+                      pool_status="stopped" if not g.wanted else "depleted" if not ready else
+                                  "depleted" if g.relay is None else
+                                  "ready" if ready >= g.config["pool_size"] else "filling",
+                      pool_error=g.pool_error, active_client_id=active_id, upstreams=rows,
+                      exit_city=g.exit_city, exit_region=g.exit_region)
         return result
 
     def _get(self, gateway_id: str) -> _Gateway:
@@ -426,7 +480,9 @@ class GatewayManager:
                                        username=cfg.get("username", ""),
                                        password=cfg.get("password", ""),
                                        timeout=25,
-                                       on_result=lambda ok: self._on_result(g, ok))
+                                       on_result=lambda ok: self._on_result(g, ok),
+                                       get_candidates=lambda: self._ordered_upstreams(g) if g.relay is relay else [],
+                                       on_upstream_result=lambda cid, ok, reason, epoch: self._on_upstream_result(g, cid, ok, reason, epoch))
         except TypeError:
             relay = self._relay_factory(cfg["host"], cfg["port"],
                                        lambda: g.upstream if g.relay is relay else None,
@@ -444,24 +500,41 @@ class GatewayManager:
             raise
         return relay
 
+    async def _ensure_listener(self, g: _Gateway, generation: int) -> bool:
+        """Serialize local binds only; remote creation never owns this lock."""
+        async with g.bind_lock:
+            if not self._alive(g, generation):
+                return False
+            if g.auth_missing:
+                self._failure(g, "local_credentials_required", "error")
+                return False
+            if g.relay is not None:
+                return True
+            cfg = dict(g.config)
+            try:
+                relay = await self._bind(g, cfg)
+            except TLSConfigurationError:
+                if self._alive(g, generation):
+                    self._failure(g, "local_tls_failed", "error")
+                return False
+            except Exception:
+                if self._alive(g, generation):
+                    self._failure(g, "local_bind_failed", "error")
+                return False
+            listener_keys = ("host", "port", "username", "password")
+            if (not self._alive(g, generation) or g.auth_missing
+                    or any(cfg.get(key) != g.config.get(key) for key in listener_keys)):
+                await relay.close()
+                return False
+            g.relay = relay
+            return True
+
     async def _start(self, g: _Gateway, generation: int) -> None:
-        if not self._alive(g, generation) or g.upstream is not None:
-            return
-        if g.auth_missing:
-            self._failure(g, "local_credentials_required", "error")
+        if not await self._ensure_listener(g, generation):
             g.next_check = self._clock() + g.config["interval"]
             return
-        if g.relay is None:
-            try:
-                g.relay = await self._bind(g, g.config)
-            except TLSConfigurationError:
-                self._failure(g, "local_tls_failed", "error")
-                g.next_check = self._clock() + g.config["interval"]
-                return
-            except Exception:
-                self._failure(g, "local_bind_failed", "error")
-                g.next_check = self._clock() + g.config["interval"]
-                return
+        if self._activate_backup(g):
+            return
         g.status = "starting"
         try:
             await self._rotate(g, generation)
@@ -469,14 +542,47 @@ class GatewayManager:
             self._failure(g, "state_write_failed", "error")
             raise
         finally:
-            if g.upstream is None and g.relay is not None:
-                await g.relay.close()
-                g.relay = None
+            async with g.bind_lock:
+                if g.upstream is None and g.relay is not None:
+                    relay, g.relay = g.relay, None
+                    await relay.close()
             g.next_check = self._clock() + g.config["interval"]
 
     def _failure(self, g: _Gateway, message: str, status: str = "degraded") -> None:
         g.last_error, g.status = message, status
         self._event(g.id, "warning", message)
+
+    def _pool_failure(self, g: _Gateway, message: str) -> None:
+        """Replenishment failure is not an outage while a verified primary remains."""
+        g.pool_error = message
+        if g.upstream is None:
+            self._failure(g, message, "backoff")
+        else:
+            self._event(g.id, "warning", message)
+
+    async def _refresh_capabilities(self) -> None:
+        if self._capability_client is self.client and self._clock() < self._capability_due:
+            return
+        self._capability_client, self._capability_due = self.client, self._clock() + CAPABILITY_TTL
+        getter = getattr(self.client, "get_proxy_capabilities", None)
+        self._external_owned = 0
+        self._capabilities = {"active_limit": 5, "creates_per_minute": 5, "known": False}
+        if getter is None:
+            return
+        try:
+            caps = await asyncio.to_thread(getter)
+            if isinstance(caps, dict):
+                for key in ("active_limit", "creates_per_minute"):
+                    if type(caps.get(key)) is int and caps[key] > 0:
+                        self._capabilities[key] = caps[key]
+                self._capabilities["known"] = caps.get("known", True) is True
+            listing = getattr(self.client, "list_proxies", None)
+            if self._capabilities["known"] and listing is not None:
+                proxies = await asyncio.to_thread(listing)
+                if isinstance(proxies, list):
+                    self._external_owned = sum(isinstance(p, dict) and p.get("client_id") not in self._owned for p in proxies)
+        except Exception:
+            self._capabilities = {"active_limit": 5, "creates_per_minute": 5, "known": False}
 
     def _backoff(self, g: _Gateway) -> None:
         g.attempts += 1
@@ -496,28 +602,48 @@ class GatewayManager:
                                                 if self._offline else BACKOFF_MIN)
             return not self._offline
 
-    async def _can_create(self, g: _Gateway) -> bool:
-        now = self._clock()
-        if self._offline and not await self._control_available():
-            self._failure(g, "network_offline", "offline")
+    async def _can_create(self, g: _Gateway, cfg: dict[str, Any] | None = None, *,
+                          background: bool = False, generation: int | None = None) -> bool:
+        await self._refresh_capabilities()
+        if not self._alive(g, g.generation if generation is None else generation):
             return False
+        now = self._clock()
+        failure = self._pool_failure if background else self._failure
+        if self._offline:
+            online = await self._control_available()
+            if not self._alive(g, g.generation if generation is None else generation):
+                return False
+            if not online:
+                failure(g, "network_offline")
+                return False
         if now < max(g.next_create, self._global_next_create):
-            self._failure(g, "creation_backoff", "degraded" if g.upstream else "backoff")
+            failure(g, "creation_backoff")
             return False
         # Lingering orphans from deleted gateways should not permanently freeze creation
         orphans = [item for item in self._owned.values()
                    if item.gateway_id not in self._gateways or self._gateways[item.gateway_id].deleting]
-        if len(orphans) >= MAX_OWNED_PER_GATEWAY * 5:
-            self._failure(g, "orphan_cleanup_pending", "degraded" if g.upstream else "backoff")
+        if len(orphans) >= MAX_ORPHAN_OWNED:
+            failure(g, "orphan_cleanup_pending")
             return False
         owned = [item for item in self._owned.values() if item.gateway_id == g.id]
-        if len(owned) >= MAX_OWNED_PER_GATEWAY or any(item.attempts for item in owned):
-            self._failure(g, "owned_cleanup_pending", "degraded" if g.upstream else "backoff")
+        if len(owned) >= max(g.config["pool_size"], (cfg or g.config)["pool_size"]) + 1:
+            failure(g, "owned_cleanup_pending")
+            return False
+        if len(self._owned) + self._external_owned >= self._capabilities["active_limit"]:
+            failure(g, "account_proxy_limit")
+            g.next_create = max(g.next_create, self._clock() + CAPABILITY_TTL)
+            return False
+        while self._account_creates and self._account_creates[0] <= now - 60:
+            self._account_creates.popleft()
+        if len(self._account_creates) >= self._capabilities["creates_per_minute"]:
+            self._global_next_create = max(self._global_next_create, self._account_creates[0] + 60)
+            self._rejection_version += 1
+            failure(g, "account_creation_limit")
             return False
         while g.creates and g.creates[0] <= now - 3600:
             g.creates.popleft()
         if len(g.creates) >= HOURLY_CREATES:
-            self._failure(g, "hourly_creation_limit", "degraded" if g.upstream else "backoff")
+            failure(g, "hourly_creation_limit")
             return False
         return True
 
@@ -525,46 +651,62 @@ class GatewayManager:
     def _valid_client_id(value: Any) -> bool:
         return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,256}", value) is not None
 
-    async def _candidate_single(self, g: _Gateway, cfg: dict[str, Any], generation: int
-                                ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    async def _candidate_single(self, g: _Gateway, cfg: dict[str, Any], generation: int,
+                                *, background: bool = False) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        failure = self._pool_failure if background else self._failure
         async with self._create_lock:
-            if not self._alive(g, generation) or not await self._can_create(g):
+            if not self._alive(g, generation) or not await self._can_create(g, cfg, background=background, generation=generation):
                 return None
             if not self._alive(g, generation):
                 return None
+            allocation_version = self._rejection_version
             g.creates.append(self._clock())
+            self._account_creates.append(self._clock())
             self._inflight_creates += 1
             try:
                 def _do_create():
-                    try:
-                        return self.client.create_proxy(mode=cfg["mode"],
-                                                        target=cfg["country_code"],
-                                                        location_id=cfg["location_id"],
-                                                        gateway_name=cfg.get("name", ""),
-                                                        gateway_id=g.id,
-                                                        residential_only=cfg.get("residential_only", True))
-                    except TypeError:
-                        return self.client.create_proxy(mode=cfg["mode"],
-                                                        target=cfg["country_code"],
-                                                        location_id=cfg["location_id"])
+                    kwargs = dict(mode=cfg["mode"], target=cfg["country_code"], location_id=cfg["location_id"],
+                                  gateway_name=cfg["name"], gateway_id=g.id, residential_only=cfg["residential_only"],
+                                  location_name=cfg["location_name"], region=cfg["region"], city=cfg["city"],
+                                  region_location_id=cfg["region_location_id"])
+                    parameters = inspect.signature(self.client.create_proxy).parameters
+                    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+                        kwargs = {k: v for k, v in kwargs.items() if k in parameters}
+                    # Filter a legacy callable before the request; never replay on a runtime TypeError.
+                    return self.client.create_proxy(**kwargs)
                 upstream = await asyncio.to_thread(_do_create)
             except Exception as exc:
                 self._global_attempts += 1
-                self._global_next_create = self._clock() + _delay(self._global_attempts)
+                self._rejection_version += 1
+                self._global_next_create = max(self._global_next_create, self._clock() + _delay(self._global_attempts))
+                code = getattr(exc, "code", "")
+                message = code if code in ("no_unique_supply", "client_limit_exceeded", "rate_limited", "upgrade_required") else _error_code("remote_create_failed", exc)
+                retry = getattr(exc, "retry_after", 0)
+                if type(retry) not in (int, float) or not math.isfinite(retry):
+                    retry = 0
+                status = _http_status(exc)
+                # HTTP Retry-After is authoritative even without a recognized JSON error code.
+                if (code in ("no_unique_supply", "client_limit_exceeded", "rate_limited", "upgrade_required")
+                        or status == 429 or (status == 503 and retry > 0)):
+                    self._global_next_create = max(self._global_next_create, self._clock() + max(60, min(3600, retry)))
+                # A stale gateway still shares the account's server-enforced deadline.
+                if not self._alive(g, generation):
+                    return None
                 self._backoff(g)
-                self._failure(g, _error_code("remote_create_failed", exc),
-                              "degraded" if g.upstream else "error")
+                failure(g, message)
                 return None
             finally:
                 self._inflight_creates -= 1
         if not isinstance(upstream, dict) or not self._valid_client_id(upstream.get("client_id")):
+            if not self._alive(g, generation):
+                return None
             self._backoff(g)
-            self._failure(g, "invalid_create_response", "degraded" if g.upstream else "error")
+            failure(g, "invalid_create_response")
             return None
         cid = upstream["client_id"]
         if cid in self._owned:
             self._backoff(g)
-            self._failure(g, "duplicate_client_id", "degraded" if g.upstream else "error")
+            failure(g, "duplicate_client_id")
             return None
         self._owned[cid] = _Owned(g.id)
         try:
@@ -577,26 +719,34 @@ class GatewayManager:
             await self._discard(cid)
             return None
         result = await self._probe_result(upstream)
-        if not result["ok"] or not self._alive(g, generation):
+        if not self._alive(g, generation):
             await self._discard(cid)
-            self._backoff(g)
-            online = await self._control_available() if not result["ok"] else True
-            self._failure(g, "candidate_probe_failed" if online else "network_offline",
-                          "degraded" if g.upstream and online else "error" if online else "offline")
             return None
-        self._global_attempts, self._global_next_create = 0, 0.0
+        if not result["ok"]:
+            await self._discard(cid)
+            if not self._alive(g, generation):
+                return None
+            self._backoff(g)
+            online = await self._control_available()
+            if not self._alive(g, generation):
+                return None
+            failure(g, "candidate_probe_failed" if online else "network_offline")
+            return None
+        if allocation_version == self._rejection_version:
+            self._global_attempts, self._global_next_create = 0, 0.0
         return upstream, result
 
     async def _candidate(self, g: _Gateway, cfg: dict[str, Any], generation: int,
-                         is_rotation: bool = False) -> tuple[dict[str, Any], dict[str, Any]] | None:
+                         is_rotation: bool = False, *, background: bool = False) -> tuple[dict[str, Any], dict[str, Any]] | None:
         old_ip = g.exit_ip if is_rotation else ""
         req_residential = bool(cfg.get("residential_only", True))
-        max_attempts = 4 if (is_rotation or req_residential or cfg["mode"] == "country") else 1
+        max_attempts = 4 if (is_rotation or req_residential or cfg["mode"] != "best") else 1
+        failure = self._pool_failure if background else self._failure
         best_candidate = None
         country_failure = ""
 
         for attempt in range(max_attempts):
-            candidate = await self._candidate_single(g, cfg, generation)
+            candidate = await self._candidate_single(g, cfg, generation, background=background)
             if candidate is None:
                 break
             upstream, result = candidate
@@ -608,7 +758,7 @@ class GatewayManager:
             if error:
                 await self._discard(upstream["client_id"])
                 country_failure = error
-                self._failure(g, error, "degraded" if g.upstream else "error")
+                failure(g, error)
                 if error == "exit_country_unverified":
                     break  # A geo lookup outage is not a reason to spend more slots.
                 continue
@@ -635,12 +785,12 @@ class GatewayManager:
             return best_candidate
         if country_failure:
             self._backoff(g)
-            self._failure(g, country_failure, "degraded" if g.upstream else "error")
+            failure(g, country_failure)
         return None
 
     @staticmethod
     def _country_error(cfg: dict[str, Any], result: dict[str, Any]) -> str:
-        if cfg["mode"] != "country":
+        if cfg["mode"] == "best":
             return ""
         codes = [result.get("country_code", ""), *result.get("country_codes", {}).values()]
         if any(code and code != cfg["country_code"] for code in codes):
@@ -677,25 +827,209 @@ class GatewayManager:
                         isp=result.get("isp", ""),
                         country_code=country, country_codes=countries,
                         country_source=str(result.get("country_source") or ""),
+                        city=str(result.get("city") or ""), region=str(result.get("region") or ""),
                         is_residential=bool(is_res))
         except Exception:
             return dict(ok=False, exit_ip="", latency_ms=0.0, isp="", is_residential=False,
                         country_code="", country_codes={}, country_source="")
 
-    def _switch(self, g: _Gateway, candidate: tuple[dict[str, Any], dict[str, Any]]) -> None:
-        upstream, result = candidate
-        previous = g.upstream
-        g.upstream = upstream  # Relay get_upstream observes this atomic assignment.
-        if previous is not None:
-            self._owned[previous["client_id"]].due = self._clock() + DRAIN_SECONDS
+    def _activate(self, g: _Gateway, cid: str) -> None:
+        """Loop-local publication: no lock, remote request or tunnel cancellation."""
+        member = g.members[cid]
+        if g.relay is None or g.auth_missing:
+            self._failure(g, "local_credentials_required" if g.auth_missing else "local_bind_failed", "error")
+            return
+        previous = g.upstream.get("client_id") if g.upstream else None
+        g.upstream = member.upstream
+        if previous is not None and previous != cid:
             g.rotations += 1
         g.revision += 1
         g.status, g.last_error, g.failures = "running", "", 0
-        g.attempts, g.next_create = 0, 0.0
-        self._apply_probe(g, result)
-        if g.relay is not None and hasattr(g.relay, "drain_active_connections"):
-            g.relay.drain_active_connections()
+        self._apply_probe(g, member.result)
         self._event(g.id, "info", "upstream_ready")
+
+    def _ordered_upstreams(self, g: _Gateway) -> list[dict[str, Any]]:
+        active = g.upstream.get("client_id") if g.upstream else ""
+        members = sorted(g.members.items(), key=lambda item: item[0] != active)
+        return [dict(member.upstream, _generation=g.generation) for cid, member in members
+                if member.state == "ready" and cid in self._owned and self._owned[cid].due is None]
+
+    def _activate_backup(self, g: _Gateway, excluded: str = "") -> bool:
+        if g.relay is None or g.auth_missing:
+            return False
+        candidates = self._ordered_upstreams(g)
+        for upstream in candidates:
+            if upstream["client_id"] != excluded:
+                self._activate(g, upstream["client_id"])
+                return True
+        return False
+
+    def _drain_client(self, g: _Gateway, cid: str) -> None:
+        if g.relay is None or not hasattr(g.relay, "drain_active_connections"):
+            return
+        method = g.relay.drain_active_connections
+        parameters = inspect.signature(method).parameters
+        if parameters:
+            method(cid)
+        elif g.config["pool_size"] == 1:
+            method()  # Legacy relay fixtures only expose the old all-streams method.
+
+    def _retire(self, g: _Gateway, cid: str, *, immediate: bool = False) -> None:
+        g.members.pop(cid, None)
+        if g.upstream is not None and g.upstream["client_id"] == cid:
+            g.upstream = None
+            g.revision += 1
+        if cid in self._owned:
+            self._owned[cid].due = self._clock() + (0 if immediate else DRAIN_SECONDS)
+        if immediate:
+            self._drain_client(g, cid)
+
+    def _switch(self, g: _Gateway, candidate: tuple[dict[str, Any], dict[str, Any]]) -> None:
+        upstream, result = candidate
+        previous = g.upstream.get("client_id") if g.upstream else None
+        cid = upstream["client_id"]
+        g.members[cid] = _Member(upstream, result)
+        self._activate(g, cid)
+        self._trim_pool(g, previous)
+        g.attempts, g.next_create = 0, 0.0
+        self._ensure_fill(g, g.generation, force=True)
+
+    def _trim_pool(self, g: _Gateway, preferred: str | None = None, *, protected: set[str] | None = None) -> None:
+        active = g.upstream.get("client_id") if g.upstream else None
+        extras = sorted((cid for cid in g.members if cid != active and cid not in (protected or set())),
+                        key=lambda cid: (g.members[cid].state == "ready", cid != preferred))
+        for cid in extras:
+            if len(g.members) <= g.config["pool_size"]:
+                break
+            self._retire(g, cid)
+
+    def _ensure_fill(self, g: _Gateway, generation: int, *, force: bool = False) -> None:
+        if not self._alive(g, generation) or (not force and not g.config["auto_heal"]):
+            return
+        if sum(member.state == "ready" for member in g.members.values()) >= g.config["pool_size"]:
+            g.pool_error = ""
+            return
+        if self._clock() < max(g.next_create, self._global_next_create):
+            return
+        if g.filler is None or g.filler.done():
+            g.filler = self._spawn(self._fill_pool(g, generation))
+
+    async def _repair_member(self, g: _Gateway, cid: str, generation: int) -> bool | None:
+        """Try the held unique exit before allocating a replacement; never delay failover."""
+        member = g.members.get(cid)
+        if member is None or not member.upstream.get("unique_exit"):
+            return False
+        if self._clock() < member.next_repair:
+            return None
+        member.next_repair = self._clock() + 60
+        result = await self._probe_result(member.upstream)
+        if not self._alive(g, generation) or g.members.get(cid) is not member:
+            return False
+        if result["ok"] and not self._country_error(g.config, result):
+            member.state, member.result, member.error, member.failures = "ready", result, "", 0
+            member.failed_at = 0
+            if g.upstream is None:
+                self._activate(g, cid)
+            return True
+        exit_state = member.upstream.get("exit") or {}
+        listing = getattr(self.client, "list_proxies", None)
+        if listing is not None:
+            try:
+                records = await asyncio.to_thread(listing)
+                record = next((p for p in records if p.get("client_id") == cid), None)
+                if record is not None:
+                    exit_state = record.get("exit") or exit_state
+            except Exception:
+                if self._alive(g, generation) and g.members.get(cid) is member:
+                    self._pool_failure(g, "exit_state_failed")
+        if not self._alive(g, generation) or g.members.get(cid) is not member:
+            return False
+        if exit_state.get("replace_mode") == "auto" and self._clock() - member.failed_at < REPAIR_GRACE_SECONDS:
+            self._pool_failure(g, "exit_replacing")
+            return None
+        rotate = getattr(self.client, "rotate_proxy_exit", None)
+        if rotate is not None:
+            try:
+                response = await asyncio.to_thread(rotate, cid)
+                if isinstance(response, dict) and response.get("error"):
+                    raise RuntimeError("exit rotation rejected")
+                if not self._alive(g, generation):
+                    return False
+                result = await self._probe_result(member.upstream)
+                if (self._alive(g, generation) and result["ok"]
+                        and not self._country_error(g.config, result) and g.members.get(cid) is member):
+                    member.state, member.result, member.error, member.failures = "ready", result, "", 0
+                    member.failed_at = 0
+                    if g.upstream is None:
+                        self._activate(g, cid)
+                    return True
+            except Exception:
+                if self._alive(g, generation) and g.members.get(cid) is member:
+                    self._pool_failure(g, "exit_rotation_failed")
+        return False
+
+    async def _reclaim_failed_slot(self, g: _Gateway, generation: int, deferred: set[str]) -> bool:
+        """Release only confirmed bad owned resources when quota leaves no replacement slot."""
+        await self._refresh_capabilities()
+        if not self._alive(g, generation):
+            return False
+        owned = [item for item in self._owned.values() if item.gateway_id == g.id]
+        pending = [item for item in owned if item.attempts]
+        if pending:
+            g.next_create = max(g.next_create, min(item.due for item in pending if item.due is not None))
+            self._pool_failure(g, "owned_cleanup_pending")
+            return False
+        full = (len(self._owned) + self._external_owned >= self._capabilities["active_limit"]
+                or len(owned) >= g.config["pool_size"] + 1)
+        if not full:
+            return True
+        bad = next((cid for cid, member in g.members.items()
+                    if member.state != "ready" and cid not in deferred), None)
+        if bad is None:
+            return True  # _can_create reports the precise quota, without deleting a healthy slot.
+        self._retire(g, bad, immediate=True)
+        await self._discard(bad)
+        if not self._alive(g, generation):
+            return False
+        if bad in self._owned:
+            g.next_create = max(g.next_create, self._owned[bad].due or self._clock() + BACKOFF_MIN)
+            self._pool_failure(g, "owned_cleanup_pending")
+            return False
+        if g.pool_error == "account_proxy_limit":
+            g.next_create = 0
+        return True
+
+    async def _fill_pool(self, g: _Gateway, generation: int) -> None:
+        if not await self._ensure_listener(g, generation):
+            return
+        deferred = set()
+        for cid, member in list(g.members.items()):
+            if member.state != "ready" and await self._repair_member(g, cid, generation) is None:
+                deferred.add(cid)
+        ready = sum(m.state == "ready" for m in g.members.values())
+        target = g.config["pool_size"] - len(deferred) if ready else g.config["pool_size"]
+        while self._alive(g, generation) and sum(m.state == "ready" for m in g.members.values()) < target:
+            if not await self._reclaim_failed_slot(g, generation, deferred):
+                return
+            cfg = dict(g.config)
+            candidate = await self._candidate(g, cfg, generation, background=True)
+            if candidate is None:
+                return
+            if (not self._alive(g, generation)
+                    or sum(m.state == "ready" for m in g.members.values()) >= g.config["pool_size"]
+                    or not await self._ensure_listener(g, generation)):
+                await self._discard(candidate[0]["client_id"])
+                return
+            upstream, result = candidate
+            g.members[upstream["client_id"]] = _Member(upstream, result)
+            if g.upstream is None:
+                self._activate(g, upstream["client_id"])
+            self._trim_pool(g, protected=deferred)
+            self._event(g.id, "info", "pool_member_ready")
+        if self._alive(g, generation):
+            self._trim_pool(g, protected=deferred)
+            if not deferred:
+                g.pool_error = ""
 
     async def rotate_gateway(self, gateway_id: str) -> dict[str, Any]:
         g = self._get(gateway_id)
@@ -711,6 +1045,10 @@ class GatewayManager:
             return self._snapshot(g)
 
     async def _rotate(self, g: _Gateway, generation: int) -> None:
+        for upstream in self._ordered_upstreams(g):
+            if (g.upstream is None or upstream["client_id"] != g.upstream["client_id"]) and g.members[upstream["client_id"]].result.get("exit_ip") != g.exit_ip:
+                self._activate(g, upstream["client_id"])
+                return
         candidate = await self._candidate(g, g.config, generation, is_rotation=True)
         if candidate is not None:
             self._switch(g, candidate)
@@ -722,37 +1060,111 @@ class GatewayManager:
         g.country_source = result.get("country_source", "")
         g.isp = result.get("isp", "")
         g.is_residential = bool(result.get("is_residential", False))
+        g.exit_city, g.exit_region = result.get("city", ""), result.get("region", "")
 
     def _on_result(self, g: _Gateway, ok: bool) -> None:
         # Traffic is only a hint to schedule a full probe, never a rotation vote.
         if not ok and g.wanted and not g.deleting and not self._closing:
             g.next_check = min(g.next_check, self._clock() + BACKOFF_MIN)
 
+    def _on_upstream_result(self, g: _Gateway, cid: str, ok: bool, reason: str, generation: int) -> None:
+        if not self._alive(g, generation) or cid not in g.members:
+            return
+        member = g.members[cid]
+        if ok:
+            return  # Traffic success does not replace the full geography check.
+        g.next_check = min(g.next_check, self._clock() + BACKOFF_MIN)
+        if g.config["pool_size"] == 1:
+            return  # Preserve the published single-member consecutive-probe threshold.
+        if reason not in ("dial", "authentication", "protocol") or member.state != "ready":
+            return
+        member.state, member.error, member.failed_at = "suspect", "upstream_connect_failed", self._clock()
+        if g.upstream and g.upstream["client_id"] == cid:
+            if not self._activate_backup(g, cid):
+                g.upstream = None
+                self._failure(g, member.error)
+        self._ensure_fill(g, generation)
+
+    async def _check_member(self, g: _Gateway, cid: str, member: _Member, generation: int) -> None:
+        result = await self._probe_result(member.upstream)
+        if not self._alive(g, generation) or g.members.get(cid) is not member:
+            return
+        member.last_check = _timestamp()
+        country_error = self._country_error(g.config, result) if result["ok"] or result["exit_ip"] else ""
+        active = g.upstream is not None and g.upstream["client_id"] == cid
+        if country_error:
+            if active:
+                self._apply_probe(g, result)
+            self._retire(g, cid, immediate=True)
+            if active and not self._activate_backup(g):
+                self._failure(g, country_error, "error")
+            self._spawn(self._cleanup_due(gateway_id=g.id))
+            return
+        if result["ok"]:
+            member.state, member.result, member.error, member.failures = "ready", result, "", 0
+            member.failed_at = 0
+            if active:
+                self._apply_probe(g, result)
+                g.status, g.last_error, g.failures = "running", "", 0
+            elif g.upstream is None:
+                self._activate(g, cid)
+            return
+        member.failures += 1
+        member.state, member.error = "suspect", "upstream_probe_failed"
+        if not member.failed_at:
+            member.failed_at = self._clock()
+        if not active or self._activate_backup(g, cid):
+            return
+        g.upstream, g.failures = None, member.failures
+        g.revision += 1
+        self._failure(g, member.error)
+        self._ensure_fill(g, generation)
+        online = await self._control_available()
+        if self._alive(g, generation) and g.members.get(cid) is member and g.upstream is None:
+            self._failure(g, member.error if online else "network_offline", "degraded" if online else "offline")
+
+    async def _check_pool(self, g: _Gateway, generation: int) -> dict[str, Any]:
+        async with g.check_lock:
+            if not await self._ensure_listener(g, generation):
+                return self._snapshot(g)
+            tasks = [self._check_member(g, cid, member, generation) for cid, member in list(g.members.items())]
+            await asyncio.gather(*tasks)
+            if self._alive(g, generation):
+                g.next_check = self._clock() + g.config["interval"]
+                if not g.members and g.config["auto_heal"]:
+                    await self._start(g, generation)
+                else:
+                    self._ensure_fill(g, generation)
+            return self._snapshot(g)
+
     async def check_gateway(self, gateway_id: str) -> dict[str, Any]:
         g = self._get(gateway_id)
         return await self._finish(self._check_locked(g, g.generation))
 
     async def _check_locked(self, g: _Gateway, generation: int) -> dict[str, Any]:
+        if g.config["pool_size"] > 1:
+            return await self._check_pool(g, generation)
         async with g.lock:
-            if not self._alive(g, generation):
+            if not await self._ensure_listener(g, generation):
                 return self._snapshot(g)
             if g.upstream is None:
                 if g.config["auto_heal"]:
                     await self._start(g, generation)
                 return self._snapshot(g)
-            result = await self._probe_result(g.upstream)
-            if not self._alive(g, generation):
+            upstream, revision = g.upstream, g.revision
+            result = await self._probe_result(upstream)
+            if not self._alive(g, generation) or g.revision != revision or g.upstream is not upstream:
                 return self._snapshot(g)
             self._apply_probe(g, result)
+            if g.upstream["client_id"] in g.members:
+                g.members[g.upstream["client_id"]].result = result
             g.next_check = self._clock() + g.config["interval"]
             # Every observed live exit needs a country check, independently of
             # another leg's connectivity failure. Total outages keep retry rules.
             country_error = self._country_error(g.config, result) if result["ok"] or result["exit_ip"] else ""
             if country_error:
-                previous, g.upstream = g.upstream, None
-                g.revision += 1
-                if g.relay is not None and hasattr(g.relay, "drain_active_connections"):
-                    g.relay.drain_active_connections()
+                previous = g.upstream
+                self._retire(g, previous["client_id"], immediate=True)
                 self._failure(g, country_error, "error")
                 await self._discard(previous["client_id"])
                 if g.config["auto_heal"] and self._alive(g, generation):
@@ -763,6 +1175,8 @@ class GatewayManager:
             else:
                 g.failures += 1
                 online = await self._control_available()
+                if not self._alive(g, generation) or g.revision != revision or g.upstream is not upstream:
+                    return self._snapshot(g)
                 self._failure(g, "upstream_probe_failed" if online else "network_offline",
                               "degraded" if online else "offline")
                 if online and g.config["auto_heal"] and g.failures >= g.config["failures_before_rotate"]:
@@ -796,26 +1210,13 @@ class GatewayManager:
     async def _update(self, g: _Gateway, cfg: dict[str, Any], generation: int) -> None:
         previous, new_relay, candidate = g.config, None, None
         endpoint_changed = (cfg["host"], cfg["port"]) != (previous["host"], previous["port"])
-        auth_changed = (cfg.get("username", ""), cfg.get("password", "")) != (previous.get("username", ""), previous.get("password", ""))
-        binding_changed = any(cfg[key] != previous[key] for key in ("mode", "country_code", "location_id"))
-        if g.relay is not None and cfg["enabled"]:
-            if endpoint_changed:
-                try:
-                    new_relay = await self._bind(g, cfg)
-                except TLSConfigurationError:
-                    g.last_error = "local_tls_failed"
-                    self._event(g.id, "warning", g.last_error)
-                    return
-                except Exception:
-                    g.last_error = "local_bind_failed"
-                    self._event(g.id, "warning", g.last_error)
-                    return
-            elif auth_changed:
-                g.relay.username = cfg.get("username", "")
-                g.relay.password = cfg.get("password", "")
-        elif g.relay is None and cfg["enabled"] and g.upstream is not None:
+        binding_changed = any(cfg[key] != previous[key] for key in
+                              ("mode", "country_code", "location_id", "region_location_id", "residential_only"))
+        pool_changed = cfg["pool_size"] != previous["pool_size"]
+        auth_changed = any(cfg.get(key) != previous.get(key) for key in ("username", "password"))
+        if g.relay is not None and cfg["enabled"] and endpoint_changed:
             try:
-                g.relay = await self._bind(g, cfg)
+                new_relay = await self._bind(g, cfg)
             except TLSConfigurationError:
                 g.last_error = "local_tls_failed"
                 self._event(g.id, "warning", g.last_error)
@@ -824,10 +1225,16 @@ class GatewayManager:
                 g.last_error = "local_bind_failed"
                 self._event(g.id, "warning", g.last_error)
                 return
+        # Invalidate pending binds too: their endpoint and auth snapshot must not publish late.
+        if binding_changed or pool_changed or endpoint_changed or auth_changed:
+            g.generation += 1
+            generation = g.generation
         try:
-            if g.upstream is not None and cfg["enabled"] and binding_changed:
+            if g.members and cfg["enabled"] and binding_changed:
                 candidate = await self._candidate(g, cfg, generation)
                 if candidate is None:
+                    if g.upstream is not None:
+                        g.status = "running"
                     return
             if g.deleting or self._closing or generation != g.generation:
                 return
@@ -836,20 +1243,31 @@ class GatewayManager:
                 self._persist()
             except OSError:
                 g.config = previous
+                if generation == g.generation and not g.deleting and not self._closing:
+                    g.wanted = previous["enabled"]
                 raise
             g.wanted = cfg["enabled"]
             if cfg.get("username") and cfg.get("password"):
                 g.auth_missing = False
             if candidate is not None:
+                for cid in list(g.members):
+                    self._retire(g, cid, immediate=True)
+                self._spawn(self._cleanup_due(gateway_id=g.id))
                 self._switch(g, candidate)
                 candidate = None
+            self._trim_pool(g)
             if new_relay is not None:
                 old_relay, g.relay, new_relay = g.relay, new_relay, None
                 await old_relay.close()
+            elif g.relay is not None:
+                g.relay.username = cfg.get("username", "")
+                g.relay.password = cfg.get("password", "")
             if not cfg["enabled"]:
                 await self._stop(g)
             elif g.upstream is None:
                 await self._start(g, generation)
+            else:
+                self._ensure_fill(g, generation, force=True)
             g.next_check = self._clock() + cfg["interval"]
             self._event(g.id, "info", "updated")
         finally:
@@ -881,11 +1299,13 @@ class GatewayManager:
 
     async def _stop(self, g: _Gateway) -> None:
         g.upstream = None
+        g.members.clear()
+        g.pool_error, g.exit_city, g.exit_region = "", "", ""
         if g.relay is not None:
             try:
                 await g.relay.close()
             except Exception:
-                pass
+                self._event(g.id, "warning", "local_close_failed")
             g.relay = None
         for cid, item in list(self._owned.items()):
             if item.gateway_id == g.id:
@@ -922,7 +1342,10 @@ class GatewayManager:
             return self._snapshot(g)
 
     async def _discard(self, client_id: str) -> None:
-        self._owned[client_id].due = 0.0
+        item = self._owned.get(client_id)
+        if item is None:
+            return
+        item.due = 0.0
         async with self._cleanup_lock:
             await self._remove_owned(client_id)
 
@@ -930,6 +1353,9 @@ class GatewayManager:
         item = self._owned.get(client_id)
         if item is None:
             return
+        gateway = self._gateways.get(item.gateway_id)
+        if gateway is not None:
+            self._drain_client(gateway, client_id)
         try:
             response = await asyncio.to_thread(self.client.remove_proxy, client_id)
             if response is False or isinstance(response, dict) and (response.get("error") or response.get("ok") is False):
@@ -967,8 +1393,10 @@ class GatewayManager:
             if self._closing:
                 break
             try:
-                await self._cleanup_due()
+                if self._cleanup_worker is None or self._cleanup_worker.done():
+                    self._cleanup_worker = self._spawn(self._cleanup_due())
                 for g in list(self._gateways.values()):
+                    self._ensure_fill(g, g.generation)
                     if (g.wanted and not g.deleting and self._clock() >= g.next_check
                             and (g.maintenance is None or g.maintenance.done())):
                         g.next_check = self._clock() + g.config["interval"]
@@ -1003,5 +1431,8 @@ class GatewayManager:
         for g in list(self._gateways.values()):
             async with g.lock:
                 await self._stop(g)
+        # Stop schedules cleanup: do not return with a task that can rewrite old state.
+        while self._tasks:
+            await asyncio.gather(*list(self._tasks), return_exceptions=True)
         self._persist()
         return dict(closed=True, pending_cleanup=len(self._owned))

@@ -5,9 +5,10 @@ import hmac
 import ssl
 from urllib.parse import urlsplit
 
-from .protocol import ProxyError, close_writer, open_tunnel, read_address
+from .protocol import ProxyError, UpstreamError, close_writer, open_tunnel, read_address
 
 HEADER_LIMIT = 32768
+CONNECT_ATTEMPTS = 3
 
 
 class MixedProxyServer:
@@ -15,17 +16,22 @@ class MixedProxyServer:
     Supports single-port multiplexing of SOCKS5, plain HTTP, and HTTPS (TLS) proxy."""
     def __init__(self, host, port, get_upstream, *, username="", password="",
                  on_result=None, timeout=20, idle_timeout=300, max_connections=256,
-                 ssl_context=None, tls_config=None):
+                 ssl_context=None, tls_config=None, get_candidates=None,
+                 on_upstream_result=None, connect_timeout=3):
         self.host, self.port = host, port
         self.get_upstream = get_upstream
         self.username, self.password = username, password
         self.on_result = on_result
+        self.get_candidates = get_candidates
+        self.on_upstream_result = on_upstream_result
+        self.connect_timeout = connect_timeout
         self.timeout, self.idle_timeout = timeout, idle_timeout
         self.max_connections = max_connections
         self.ssl_context = ssl_context
         self.tls_config = tls_config or {}
         self.server = None
         self.tasks = set()
+        self.task_upstreams = {}
         self.connections = 0
 
     async def start(self):
@@ -40,21 +46,24 @@ class MixedProxyServer:
         self.server = await asyncio.start_server(self._accept, bind_host, self.port, limit=HEADER_LIMIT)
         self.port = self.server.sockets[0].getsockname()[1]
 
-    def drain_active_connections(self):
-        """Cancel in-flight client proxy tunnel tasks to force reconnection on upstream switch."""
-        tasks = list(self.tasks)
+    def drain_active_connections(self, client_id=None):
+        """Retire only one upstream's streams; ordinary selection never migrates TCP."""
+        tasks = [task for task in self.tasks
+                 if client_id is None or self.task_upstreams.get(task) == client_id]
         for task in tasks:
-            task.cancel()
+            if task is not asyncio.current_task():
+                task.cancel()
 
     async def close(self):
-        if self.server:
-            self.server.close()
-            await self.server.wait_closed()
-            self.server = None
+        server, self.server = self.server, None
+        if server:
+            server.close()
         self.drain_active_connections()
         tasks = list(self.tasks)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if server:
+            await server.wait_closed()
 
     async def _accept(self, reader, writer):
         task = asyncio.current_task()
@@ -62,6 +71,7 @@ class MixedProxyServer:
         if self.connections >= self.max_connections:
             await close_writer(writer)
             self.tasks.discard(task)
+            self.task_upstreams.pop(task, None)
             return
         self.connections += 1
         try:
@@ -79,6 +89,7 @@ class MixedProxyServer:
         finally:
             self.connections -= 1
             self.tasks.discard(task)
+            self.task_upstreams.pop(task, None)
             await close_writer(writer)
 
     async def _https(self, first, reader, writer):
@@ -127,6 +138,67 @@ class MixedProxyServer:
             raise ProxyError("Gateway has no healthy upstream")
         return dict(upstream)
 
+    def _candidates(self):
+        """Snapshot candidate ordering once per connection, bounded and ID-deduplicated."""
+        values = self.get_candidates() if self.get_candidates else [self._upstream()]
+        candidates, seen = [], set()
+        for upstream in values:
+            cid = upstream.get('client_id')
+            if cid in seen:
+                continue
+            seen.add(cid)
+            candidates.append(dict(upstream))
+            if len(candidates) == CONNECT_ATTEMPTS:
+                break
+        return candidates
+
+    def _report(self, upstream, ok, reason):
+        if self.on_result is not None:
+            self.on_result(ok)
+        if self.on_upstream_result is not None:
+            self.on_upstream_result(upstream.get('client_id'), ok, reason,
+                                    upstream.get('_generation'))
+
+    def _candidate_current(self, upstream):
+        if self.get_candidates is None:
+            return True
+        return any(value.get('client_id') == upstream.get('client_id')
+                   and value.get('_generation') == upstream.get('_generation')
+                   for value in self.get_candidates())
+
+    async def _connect_candidates(self, host=None, port=None, *, socks=False, tls=False):
+        """Only connect/handshake is retried: no business bytes or success reply sent yet."""
+        deadline = asyncio.get_running_loop().time() + min(self.timeout, self.connect_timeout * CONNECT_ATTEMPTS)
+        last_error = ProxyError('Gateway has no healthy upstream')
+        for upstream in self._candidates():
+            if not self._candidate_current(upstream):
+                continue
+            self.task_upstreams[asyncio.current_task()] = upstream.get("client_id")
+            remaining = min(self.connect_timeout, deadline - asyncio.get_running_loop().time())
+            if remaining <= 0:
+                break
+            try:
+                if host is not None:
+                    protocol = 'socks' if socks else ('https' if tls and upstream.get('https_port') else 'http')
+                    remote_r, remote_w = await open_tunnel(upstream, host, port, protocol=protocol, timeout=remaining)
+                else:
+                    context = ssl.create_default_context() if tls and upstream.get('https_port') else None
+                    remote_r, remote_w = await asyncio.wait_for(asyncio.open_connection(
+                        upstream['host'], upstream['https_port'] if context else upstream['http_port'],
+                        ssl=context, limit=HEADER_LIMIT), remaining)
+            except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError) as exc:
+                reason = getattr(exc, 'reason', 'dial' if host is None else 'destination')
+                self._report(upstream, False, reason)
+                last_error = exc
+                continue
+            if not self._candidate_current(upstream):
+                await close_writer(remote_w)
+                last_error = UpstreamError("Upstream retired before request submission", "retired")
+                continue
+            self._report(upstream, True, 'connected')
+            return upstream, remote_r, remote_w
+        raise last_error
+
     async def _socks(self, reader, writer):
         async def handshake():
             count = (await reader.readexactly(1))[0]
@@ -165,9 +237,8 @@ class MixedProxyServer:
             return
         remote_w = None
         try:
-            upstream = self._upstream()
             # Keep native SOCKS TCP half-close semantics; TLS cannot write_eof().
-            remote_r, remote_w = await open_tunnel(upstream, *dest, protocol="socks", timeout=self.timeout)
+            upstream, remote_r, remote_w = await self._connect_candidates(*dest, socks=True)
         except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError):
             writer.write(b"\x05\x01\x00\x01" + b"\0" * 6)
             await writer.drain()
@@ -233,10 +304,8 @@ class MixedProxyServer:
                 if not host or not port or parsed.path or parsed.username or parsed.query or parsed.fragment:
                     raise ValueError("Invalid CONNECT authority")
                 try:
-                    upstream = self._upstream()
-                    proto = "https" if upstream.get("https_port") and writer.get_extra_info("ssl_object") else "http"
-                    remote_r, remote_w = await open_tunnel(
-                        upstream, host, port, protocol=proto, timeout=self.timeout)
+                    upstream, remote_r, remote_w = await self._connect_candidates(
+                        host, port, tls=bool(writer.get_extra_info("ssl_object")))
                 except asyncio.TimeoutError:
                     if not committed:
                         await self._http_error(writer, 504, "Gateway Timeout")
@@ -256,15 +325,8 @@ class MixedProxyServer:
                 raise ValueError("HTTP proxy requires an absolute http URL")
             if parsed.port is not None and not 1 <= parsed.port <= 65535:
                 raise ValueError("Invalid destination port")
-            upstream = self._upstream()
-
-            if upstream.get("https_port") and writer.get_extra_info("ssl_object"):
-                ssl_ctx = ssl.create_default_context()
-                remote_r, remote_w = await asyncio.wait_for(asyncio.open_connection(
-                    upstream["host"], upstream["https_port"], ssl=ssl_ctx, limit=HEADER_LIMIT), self.timeout)
-            else:
-                remote_r, remote_w = await asyncio.wait_for(asyncio.open_connection(
-                    upstream["host"], upstream["http_port"], limit=HEADER_LIMIT), self.timeout)
+            upstream, remote_r, remote_w = await self._connect_candidates(
+                tls=bool(writer.get_extra_info("ssl_object")))
 
             token = base64.b64encode(f"{upstream['auth_token']}:{upstream.get('password', 'none')}".encode()).decode()
             removed = {"proxy-authorization", "proxy-connection", "connection", "keep-alive",
@@ -279,6 +341,7 @@ class MixedProxyServer:
             output = [f"{method} {target} HTTP/1.1", f"Host: {parsed.netloc}",
                       f"Proxy-Authorization: Basic {token}", "Connection: close"]
             output.extend(f"{k}: {v}" for k, v in headers if k.lower() not in removed)
+            committed = True  # Even a failed drain may have delivered request headers.
             remote_w.write(("\r\n".join(output) + "\r\n\r\n").encode("iso-8859-1"))
             await remote_w.drain()
             if values("expect"):

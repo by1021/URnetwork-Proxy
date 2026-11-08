@@ -355,7 +355,7 @@ class ManagementApp:
         self.account_cache = (0, None)
         return self.settings()
 
-    async def validate_binding(self, data, current=None):
+    async def validate_binding(self, data: dict, current: dict | None = None) -> None:
         if data.get("mode") == "country":
             if (current and current.get("mode") == "country"
                     and current.get("location_id") == data.get("location_id")
@@ -367,6 +367,21 @@ class ManagementApp:
                           and c["location_id"] == data.get("location_id")), None)
             if not match:
                 raise GatewayValidationError("location_id", "国家与位置不匹配，请刷新国家列表重新选择")
+
+        elif data.get('mode') in ('region', 'city'):
+            mode = data['mode']
+            if (current and all(current.get(key, '') == data.get(key, '')
+                    for key in ('mode', 'location_id', 'country_code', 'region_location_id'))):
+                for key in ('location_name', 'region', 'city', 'region_location_id'):
+                    data[key] = current.get(key, '')
+                return
+            query = data.get('location_name') or data.get(mode) or ''
+            match = await asyncio.to_thread(self.catalog.resolve, data.get('location_id'),
+                data.get('country_code', ''), mode, query, data.get('region_location_id', ''))
+            if not match or match.get('provider_count', 0) <= 0:
+                raise GatewayValidationError('location_id', '位置与国家/地区不匹配或数据已过期，请重新搜索选择')
+            data.update(location_name=match['name'], region=match.get('region', ''),
+                        city=match.get('city', ''), region_location_id=match.get('region_location_id', ''))
 
     async def gateway_mutation(self, method, gateway_id, action, data):
         if self.updating_credentials:
@@ -473,6 +488,13 @@ class ManagementApp:
                     augmented.append(row)
                 return {"gateways": augmented}
             return self.call(get_gateways())
+        if path == '/api/locations' and method == 'GET':
+            params = parse_qs(query)
+            return self.catalog.search(params.get('query', [''])[0],
+                country_code=params.get('country_code', [''])[0],
+                location_type=params.get('type', [''])[0],
+                region_location_id=params.get('region_location_id', [''])[0],
+                refresh=params.get('refresh', ['0'])[0] in ('1', 'true'))
         if path == "/api/countries" and method == "GET":
             return self.catalog.get()
         if path == "/api/countries/refresh" and method == "POST":

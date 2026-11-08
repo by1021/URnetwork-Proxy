@@ -333,7 +333,10 @@ def interactive_mode(client, config):
                 target_name = target_loc.get("name")
                 print(f"\n[*] 正在申请城市 [{target_name}] 节点...")
                 try:
-                    res = client.create_proxy(mode="city", target=target_name)
+                    res = client.create_proxy(mode="city", target=target_loc.get('country_code', ''),
+                                              location_id=target_loc['location_id'], location_name=target_name,
+                                              city=target_loc.get('city', ''), region=target_loc.get('region', ''),
+                                              region_location_id=target_loc.get('region_location_id', ''))
                     display_proxy_result(res, check_tunnel=True)
                 except Exception as e:
                     print(f"[!] 申请失败: {e}\n")
@@ -471,8 +474,10 @@ def main():
     parser.add_argument("--create-api-key", nargs="?", const="URnetwork-Proxy-Cli", help="为当前账号生成长期 API Key")
     parser.add_argument("--generate-seedphrase", action="store_true", help="为当前账号生成 24 位专属助记词")
     # 代理控制与查询
-    parser.add_argument("--mode", choices=["best", "country", "city"], help="代理策略模式: best | country | city")
-    parser.add_argument("--target", default="", help="目标国家代码 (如 JP) 或城市名 (如 Tokyo)")
+    parser.add_argument("--mode", choices=["best", "country", "region", "city"], help="代理策略模式: best | country | region | city")
+    parser.add_argument("--target", default="", help="目标国家代码 (如 JP) 或地区/城市名 (如 California/Tokyo)")
+    parser.add_argument("--location-id", default="", help="已选定的精确城市/地区 location_id")
+    parser.add_argument("--country-code", default="", help="精确城市/地区绑定的国家代码，如 US")
     parser.add_argument("--no-check", action="store_true", help="跳过端到端代理连通性自检 (仅显示连接信息)")
     parser.add_argument("--list-countries", action="store_true", help="从 https://ur.io 获取在线国家列表")
     parser.add_argument("--status", action="store_true", help="查看账户配额状态")
@@ -588,7 +593,11 @@ def main():
     if args.mode and client:
         client.login()
         target = args.target or (config.get("default_country", "US") if args.mode == "country" else "")
-        res = client.create_proxy(mode=args.mode, target=target)
+        if args.location_id:
+            res = client.create_proxy(mode=args.mode, target=args.country_code or target,
+                                      location_id=args.location_id, location_name=target)
+        else:
+            res = client.create_proxy(mode=args.mode, target=target, country_code=args.country_code)
         display_proxy_result(res, check_tunnel=not args.no_check)
         return
 
