@@ -1,3 +1,5 @@
+import json
+import threading
 """Bounded end-to-end probes: authentication, verified TLS, valid IP response."""
 import asyncio
 import base64
@@ -214,6 +216,95 @@ def test_full_proxy(host, http_port, socks_port, token, password='none', timeout
     return res
 
 
+
+_IP_INFO_CACHE = {}
+_IP_INFO_LOCK = threading.Lock()
+
+
+def inspect_ip_quality(ip: str, timeout: float = 3.0) -> dict:
+    """Inspect IP quality: ISP, organization, and residential classification."""
+    if not ip or not isinstance(ip, str):
+        return {"ip": ip, "is_residential": False, "isp": "", "org": "", "city": "", "region": ""}
+
+    with _IP_INFO_LOCK:
+        if ip in _IP_INFO_CACHE:
+            return dict(_IP_INFO_CACHE[ip])
+
+    info = {"ip": ip, "is_residential": False, "isp": "", "org": "", "city": "", "region": ""}
+    # 1. Query ip-api.com
+    try:
+        url = f"http://ip-api.com/json/{ip}?fields=status,isp,org,as,hosting,city,regionName"
+        req = urllib.request.Request(url, headers={"User-Agent": "curl/7.88.1"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            if data.get("status") == "success":
+                isp = data.get("isp", "")
+                org = data.get("org", "")
+                asn = data.get("as", "")
+                hosting = bool(data.get("hosting", False))
+                dc_kw = (
+                    "gocodeit", "ionos", "hetzner", "ovh", "digitalocean", "amazon", "aws",
+                    "choopa", "m247", "linode", "vultr", "quadranet", "leaseweb", "cogent",
+                    "server", "hosting", "datacenter", "data center", "cloud", "zenlayer",
+                    "contabo", "oracle", "microsoft", "azure", "google cloud"
+                )
+                text = f"{isp} {org} {asn}".lower()
+                is_dc = hosting or any(k in text for k in dc_kw)
+                res_kw = (
+                    "comcast", "charter", "spectrum", "at&t", "verizon", "cox", "sparklight",
+                    "centurylink", "lumen", "frontier", "broadband", "cable", "telecom",
+                    "fiber", "pppox", "res.", "residential", "hsd1", "lightspeed"
+                )
+                is_res = (not is_dc) or any(k in text for k in res_kw)
+                info = {
+                    "ip": ip,
+                    "is_residential": is_res and not hosting,
+                    "is_datacenter": is_dc,
+                    "isp": isp or org,
+                    "org": org,
+                    "city": data.get("city", ""),
+                    "region": data.get("regionName", "")
+                }
+                with _IP_INFO_LOCK:
+                    _IP_INFO_CACHE[ip] = info
+                return dict(info)
+    except Exception:
+        pass
+
+    # 2. Fallback to ipinfo.io
+    try:
+        url = f"https://ipinfo.io/{ip}/json"
+        req = urllib.request.Request(url, headers={"User-Agent": "curl/7.88.1"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            org = data.get("org", "")
+            hostname = data.get("hostname", "")
+            text = f"{org} {hostname}".lower()
+            dc_kw = ("gocodeit", "ionos", "hetzner", "ovh", "digitalocean", "amazon", "hosting", "datacenter", "cloud")
+            is_dc = any(k in text for k in dc_kw)
+            res_kw = ("comcast", "charter", "spectrum", "at&t", "verizon", "cox", "sparklight", "cable", "res.")
+            is_res = any(k in text for k in res_kw) or not is_dc
+            info = {
+                "ip": ip,
+                "is_residential": is_res,
+                "is_datacenter": is_dc,
+                "isp": org,
+                "org": org,
+                "city": data.get("city", ""),
+                "region": data.get("region", "")
+            }
+            with _IP_INFO_LOCK:
+                _IP_INFO_CACHE[ip] = info
+            return dict(info)
+    except Exception:
+        pass
+
+    with _IP_INFO_LOCK:
+        _IP_INFO_CACHE[ip] = info
+    return dict(info)
+
 async def probe_upstream(upstream, timeout=15):
     targets = ('api.ipify.org', 'checkip.amazonaws.com', 'icanhazip.com')
     async def one(fn, port, **kw):
@@ -248,9 +339,21 @@ async def probe_upstream(upstream, timeout=15):
         err_parts.append('ok' if https[0] else https[2])
     err_str = f"HTTP: {err_parts[0]}; SOCKS5: {err_parts[1]}" + (f"; HTTPS: {err_parts[2]}" if has_https else "")
 
+    exit_ip = socks[2] if socks[0] else (http[2] if http[0] else (https[2] if https[0] else ''))
+    ip_info = {}
+    if ok and exit_ip:
+        try:
+            ip_info = await asyncio.to_thread(inspect_ip_quality, exit_ip)
+        except Exception:
+            pass
+
     return dict(ok=ok, http_ok=http[0], socks_ok=socks[0],
                 https_ok=https[0] if has_https else True,
-                exit_ip=socks[2] if socks[0] else (http[2] if http[0] else (https[2] if https[0] else '')),
+                exit_ip=exit_ip,
+                isp=ip_info.get("isp", ""),
+                is_residential=bool(ip_info.get("is_residential", False)),
+                city=ip_info.get("city", ""),
+                region=ip_info.get("region", ""),
                 latency_ms=max(http[1] or 0, socks[1] or 0, (https[1] or 0) if has_https else 0),
                 error='' if ok else err_str)
 

@@ -10,7 +10,7 @@ services:
       # Override URNETWORK_WEB_BIND / URNETWORK_GATEWAY_BIND (e.g. 127.0.0.1) in .env if local-only.
       - "${URNETWORK_WEB_BIND:+${URNETWORK_WEB_BIND}:}${URNETWORK_WEB_PORT:-8777}:8777"
       # Keep host and container gateway ports identical for copied proxy URLs.
-      - "${URNETWORK_GATEWAY_BIND:+${URNETWORK_GATEWAY_BIND}:}${URNETWORK_GATEWAY_PORTS:-10801-10810}:${URNETWORK_GATEWAY_PORTS:-10801-10810}"
+      - "${URNETWORK_GATEWAY_BIND:+${URNETWORK_GATEWAY_BIND}:}${URNETWORK_GATEWAY_PORTS:-31000-31010}:${URNETWORK_GATEWAY_PORTS:-31000-31010}"
     volumes:
       # Default: mount local ./data directory to preserve config.json and states on host.
       # Override URNETWORK_DATA_DIR=urnetwork-data in .env if using a named volume.

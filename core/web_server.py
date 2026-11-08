@@ -355,8 +355,12 @@ class ManagementApp:
         self.account_cache = (0, None)
         return self.settings()
 
-    async def validate_binding(self, data):
+    async def validate_binding(self, data, current=None):
         if data.get("mode") == "country":
+            if (current and current.get("mode") == "country"
+                    and current.get("location_id") == data.get("location_id")
+                    and str(current.get("country_code", "")).upper() == str(data.get("country_code", "")).upper()):
+                return
             snapshot = await asyncio.to_thread(self.catalog.get)
             match = next((c for c in snapshot["countries"]
                           if c["code"] == str(data.get("country_code", "")).upper()
@@ -408,17 +412,17 @@ class ManagementApp:
             normalized = _validate(data, {**CONFIG_DEFAULTS,
                 **{k: current[k] for k in CONFIG_DEFAULTS if k in current},
                 **records.get(gateway_id, {})})
-            await self.validate_binding(normalized)
+            await self.validate_binding(normalized, current=current)
             if "country_code" in data:
-                data = {**data, "country_code": normalized["country_code"]}
-            res = await self.manager.update_gateway(gateway_id, data)
+                normalized["country_code"] = str(data["country_code"]).upper()
+            res = await self.manager.update_gateway(gateway_id, normalized)
             gid = gateway_id
-            if data.get("username") and data.get("password"):
-                records[gid] = {"username": data["username"], "password": data["password"]}
+            if normalized.get("username") and normalized.get("password"):
+                records[gid] = {"username": normalized["username"], "password": normalized["password"]}
                 self._save_gateway_auth(records)
-                res["username"] = data["username"]
-                res["password"] = data["password"]
-            elif "username" in data and not data.get("username"):
+                res["username"] = normalized["username"]
+                res["password"] = normalized["password"]
+            elif "username" in data and not normalized.get("username"):
                 if gid in records:
                     records.pop(gid, None)
                     self._save_gateway_auth(records)

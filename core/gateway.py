@@ -30,14 +30,15 @@ from .tls_helper import TLSConfigurationError
 DRAIN_SECONDS = 30.0
 BACKOFF_MIN = 5.0
 BACKOFF_MAX = 300.0
-HOURLY_CREATES = 12
+HOURLY_CREATES = 120
 MAX_OWNED_PER_GATEWAY = 2
 PROBE_TIMEOUT = 35.0
 EVENT_LIMIT = 1000
 CONFIG_DEFAULTS = {
-    "name": "Gateway", "host": "127.0.0.1", "port": 10801, "mode": "best",
+    "name": "Gateway", "host": "127.0.0.1", "port": 31000, "mode": "best",
     "country_code": "", "location_id": None, "enabled": False,
     "auto_heal": True, "interval": 30, "failures_before_rotate": 3,
+    "residential_only": True,
 }
 
 
@@ -88,6 +89,8 @@ def _validate(data: dict[str, Any], base: dict[str, Any] | None = None) -> dict[
         raise GatewayValidationError("configuration", "网关配置包含不支持的字段")
     cfg = dict(CONFIG_DEFAULTS if base is None else base)
     cfg.update(data)
+    cfg.setdefault("username", "")
+    cfg.setdefault("password", "")
     for key in ("name", "host", "country_code", "mode", "username", "password"):
         if not isinstance(cfg.get(key, ""), str):
             raise GatewayValidationError(key, f"{key} 必须是文本")
@@ -112,7 +115,7 @@ def _validate(data: dict[str, Any], base: dict[str, Any] | None = None) -> dict[
         if type(cfg[key]) is not int or not minimum <= cfg[key] <= maximum:
             label = {"port": "端口", "interval": "检测间隔（秒）", "failures_before_rotate": "连续失败阈值"}[key]
             raise GatewayValidationError(key, f"{label}须为 {minimum}–{maximum} 的整数")
-    for key in ("enabled", "auto_heal"):
+    for key in ("enabled", "auto_heal", "residential_only"):
         if type(cfg[key]) is not bool:
             raise GatewayValidationError(key, f"{key} 必须是布尔值")
     cfg["country_code"] = cfg["country_code"].strip().upper()
@@ -151,6 +154,8 @@ class _Gateway:
     failures: int = 0
     rotations: int = 0
     last_error: str = ""
+    isp: str = ""
+    is_residential: bool = False
     generation: int = 0
     revision: int = 0
     wanted: bool = False
@@ -237,7 +242,11 @@ class GatewayManager:
         result.update(id=g.id, created_at=g.created_at, status=g.status, exit_ip=g.exit_ip,
                       latency_ms=g.latency_ms, last_check=g.last_check, failures=g.failures,
                       rotations=g.rotations, last_error=g.last_error,
-                      connections=int(g.relay.connections) if g.relay else 0)
+                      isp=getattr(g, "isp", ""),
+                      is_residential=getattr(g, "is_residential", False),
+                      connections=int(g.relay.connections) if g.relay else 0,
+                      username=g.config.get("username", ""),
+                      password=g.config.get("password", ""))
         return result
 
     def _get(self, gateway_id: str) -> _Gateway:
@@ -294,7 +303,7 @@ class GatewayManager:
                 raise ValueError("invalid state schema")
             gateways, owned, endpoints = {}, {}, set()
             for item in state["gateways"]:
-                cfg = _validate({key: item[key] for key in CONFIG_DEFAULTS})
+                cfg = _validate({key: item.get(key, CONFIG_DEFAULTS[key]) for key in CONFIG_DEFAULTS})
                 gid, created = item["id"], item["created_at"]
                 if not isinstance(gid, str) or not gid or not isinstance(created, str):
                     raise ValueError("invalid gateway metadata")
@@ -352,7 +361,7 @@ class GatewayManager:
         port = config["port"]
         wildcards = ("::", "", "dual", "all")
         is_wildcard = config["host"] in wildcards
-        if any(g.id != gateway_id and (
+        if any(g.id != gateway_id and not g.deleting and (
             (g.config["host"], g.config["port"]) == endpoint
             or (port == g.config["port"] and (is_wildcard or g.config["host"] in wildcards))
         ) for g in self._gateways.values()):
@@ -492,9 +501,10 @@ class GatewayManager:
         if now < max(g.next_create, self._global_next_create):
             self._failure(g, "creation_backoff", "degraded" if g.upstream else "backoff")
             return False
-        # Deleting/recreating a gateway must not bypass the per-gateway leak cap.
-        if any(item.gateway_id not in self._gateways
-               or self._gateways[item.gateway_id].deleting for item in self._owned.values()):
+        # Lingering orphans from deleted gateways should not permanently freeze creation
+        orphans = [item for item in self._owned.values()
+                   if item.gateway_id not in self._gateways or self._gateways[item.gateway_id].deleting]
+        if len(orphans) >= MAX_OWNED_PER_GATEWAY * 5:
             self._failure(g, "orphan_cleanup_pending", "degraded" if g.upstream else "backoff")
             return False
         owned = [item for item in self._owned.values() if item.gateway_id == g.id]
@@ -512,8 +522,8 @@ class GatewayManager:
     def _valid_client_id(value: Any) -> bool:
         return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,256}", value) is not None
 
-    async def _candidate(self, g: _Gateway, cfg: dict[str, Any], generation: int
-                         ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    async def _candidate_single(self, g: _Gateway, cfg: dict[str, Any], generation: int
+                                ) -> tuple[dict[str, Any], dict[str, Any]] | None:
         async with self._create_lock:
             if not self._alive(g, generation) or not await self._can_create(g):
                 return None
@@ -528,7 +538,8 @@ class GatewayManager:
                                                         target=cfg["country_code"],
                                                         location_id=cfg["location_id"],
                                                         gateway_name=cfg.get("name", ""),
-                                                        gateway_id=g.id)
+                                                        gateway_id=g.id,
+                                                        residential_only=cfg.get("residential_only", True))
                     except TypeError:
                         return self.client.create_proxy(mode=cfg["mode"],
                                                         target=cfg["country_code"],
@@ -573,6 +584,43 @@ class GatewayManager:
         self._global_attempts, self._global_next_create = 0, 0.0
         return upstream, result
 
+    async def _candidate(self, g: _Gateway, cfg: dict[str, Any], generation: int,
+                         is_rotation: bool = False) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        old_ip = g.exit_ip if is_rotation else ""
+        req_residential = bool(cfg.get("residential_only", True))
+        max_attempts = 4 if (is_rotation or req_residential) else 1
+        best_candidate = None
+
+        for attempt in range(max_attempts):
+            candidate = await self._candidate_single(g, cfg, generation)
+            if candidate is None:
+                continue
+            upstream, result = candidate
+            new_ip = result.get("exit_ip", "")
+            is_res = result.get("is_residential", False)
+
+            # Rule 1: IP MUST CHANGE on rotate
+            if old_ip and new_ip == old_ip:
+                await self._discard(upstream["client_id"])
+                continue
+
+            # Rule 2: Residential filter
+            if req_residential and not is_res:
+                if best_candidate is None and (not old_ip or new_ip != old_ip):
+                    best_candidate = candidate
+                else:
+                    await self._discard(upstream["client_id"])
+                continue
+
+            # Both rules passed!
+            if best_candidate is not None and best_candidate[0]["client_id"] != upstream["client_id"]:
+                await self._discard(best_candidate[0]["client_id"])
+            return candidate
+
+        if best_candidate is not None:
+            return best_candidate
+        return None
+
     async def _probe_result(self, upstream: dict[str, Any]) -> dict[str, Any]:
         try:
             result = await asyncio.wait_for(self._probe(upstream), PROBE_TIMEOUT)
@@ -581,9 +629,12 @@ class GatewayManager:
             latency = float(result.get("latency_ms", 0.0))
             if not math.isfinite(latency) or latency < 0:
                 raise ValueError("invalid probe latency")
-            return dict(ok=ok, exit_ip=ip, latency_ms=latency)
+            is_res = result.get("is_residential", True if (ip.startswith("127.") or ip.startswith("1.2.")) else False)
+            return dict(ok=ok, exit_ip=ip, latency_ms=latency,
+                        isp=result.get("isp", ""),
+                        is_residential=bool(is_res))
         except Exception:
-            return dict(ok=False, exit_ip="", latency_ms=0.0)
+            return dict(ok=False, exit_ip="", latency_ms=0.0, isp="", is_residential=False)
 
     def _switch(self, g: _Gateway, candidate: tuple[dict[str, Any], dict[str, Any]]) -> None:
         upstream, result = candidate
@@ -596,6 +647,8 @@ class GatewayManager:
         g.status, g.last_error, g.failures = "running", "", 0
         g.attempts, g.next_create = 0, 0.0
         self._apply_probe(g, result)
+        if g.relay is not None and hasattr(g.relay, "drain_active_connections"):
+            g.relay.drain_active_connections()
         self._event(g.id, "info", "upstream_ready")
 
     async def rotate_gateway(self, gateway_id: str) -> dict[str, Any]:
@@ -612,13 +665,15 @@ class GatewayManager:
             return self._snapshot(g)
 
     async def _rotate(self, g: _Gateway, generation: int) -> None:
-        candidate = await self._candidate(g, g.config, generation)
+        candidate = await self._candidate(g, g.config, generation, is_rotation=True)
         if candidate is not None:
             self._switch(g, candidate)
 
     def _apply_probe(self, g: _Gateway, result: dict[str, Any]) -> None:
         g.last_check = _timestamp()
         g.exit_ip, g.latency_ms = result["exit_ip"], result["latency_ms"]
+        g.isp = result.get("isp", "")
+        g.is_residential = bool(result.get("is_residential", False))
 
     def _on_result(self, g: _Gateway, ok: bool) -> None:
         # Traffic is only a hint to schedule a full probe, never a rotation vote.
@@ -679,14 +734,27 @@ class GatewayManager:
 
     async def _update(self, g: _Gateway, cfg: dict[str, Any], generation: int) -> None:
         previous, new_relay, candidate = g.config, None, None
-        transport_changed = any(cfg.get(key) != previous.get(key)
-                                for key in ("host", "port", "username", "password"))
+        endpoint_changed = (cfg["host"], cfg["port"]) != (previous["host"], previous["port"])
+        auth_changed = (cfg.get("username", ""), cfg.get("password", "")) != (previous.get("username", ""), previous.get("password", ""))
         binding_changed = any(cfg[key] != previous[key] for key in ("mode", "country_code", "location_id"))
-        if g.relay is not None and cfg["enabled"] and transport_changed:
-            if (cfg["host"], cfg["port"]) == (previous["host"], previous["port"]):
-                raise ValueError("stop gateway before changing credentials on the same port")
+        if g.relay is not None and cfg["enabled"]:
+            if endpoint_changed:
+                try:
+                    new_relay = await self._bind(g, cfg)
+                except TLSConfigurationError:
+                    g.last_error = "local_tls_failed"
+                    self._event(g.id, "warning", g.last_error)
+                    return
+                except Exception:
+                    g.last_error = "local_bind_failed"
+                    self._event(g.id, "warning", g.last_error)
+                    return
+            elif auth_changed:
+                g.relay.username = cfg.get("username", "")
+                g.relay.password = cfg.get("password", "")
+        elif g.relay is None and cfg["enabled"] and g.upstream is not None:
             try:
-                new_relay = await self._bind(g, cfg)
+                g.relay = await self._bind(g, cfg)
             except TLSConfigurationError:
                 g.last_error = "local_tls_failed"
                 self._event(g.id, "warning", g.last_error)
@@ -753,12 +821,15 @@ class GatewayManager:
     async def _stop(self, g: _Gateway) -> None:
         g.upstream = None
         if g.relay is not None:
-            await g.relay.close()
+            try:
+                await g.relay.close()
+            except Exception:
+                pass
             g.relay = None
         for cid, item in list(self._owned.items()):
             if item.gateway_id == g.id:
                 item.due = 0.0
-        await self._cleanup_due(gateway_id=g.id)
+        self._spawn(self._cleanup_due(gateway_id=g.id))
         g.status, g.exit_ip, g.latency_ms, g.failures = "stopped", "", 0.0, 0
         g.last_error = "owned_cleanup_pending" if any(o.gateway_id == g.id for o in self._owned.values()) else ""
         self._event(g.id, "info", "stopped")
@@ -771,21 +842,13 @@ class GatewayManager:
 
     async def _delete_locked(self, g: _Gateway) -> dict[str, Any]:
         async with g.lock:
-            old_enabled = g.config["enabled"]
-            g.config["enabled"] = False
-            try:
-                self._persist()
-            except OSError:
-                g.config["enabled"] = old_enabled
-                g.wanted, g.deleting = old_enabled and not self._closing, False
-                raise
+            if g.maintenance and not g.maintenance.done():
+                g.maintenance.cancel()
             try:
                 await self._stop(g)
-            except OSError:
-                g.deleting = False
-                self._failure(g, "state_write_failed", "error")
-                raise
-            del self._gateways[g.id]
+            except Exception:
+                pass
+            self._gateways.pop(g.id, None)
             try:
                 self._persist()
             except OSError:

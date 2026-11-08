@@ -79,3 +79,48 @@ class CountryCatalog:
         with self._lock:
             self._countries, self._updated_at, self._time = [], None, 0
             self._error, self._last_attempt = None, 0
+
+_COUNTRY_RESIDENTIAL_LOCS = {}
+_COUNTRY_RESIDENTIAL_LOCK = threading.Lock()
+
+
+def get_residential_locations(country_code, api_base='https://api.bringyour.com', timeout=15, client=None):
+    """Return active city/region locations in a country, excluding known datacenter hubs (e.g. Ashburn VA)."""
+    code = (country_code or 'US').strip().upper()
+    with _COUNTRY_RESIDENTIAL_LOCK:
+        if code in _COUNTRY_RESIDENTIAL_LOCS and _COUNTRY_RESIDENTIAL_LOCS[code]:
+            return list(_COUNTRY_RESIDENTIAL_LOCS[code])
+
+    country_names = {
+        'US': 'United States', 'JP': 'Japan', 'GB': 'United Kingdom',
+        'DE': 'Germany', 'CA': 'Canada', 'FR': 'France', 'SG': 'Singapore',
+        'AU': 'Australia', 'KR': 'South Korea', 'TW': 'Taiwan', 'HK': 'Hong Kong'
+    }
+    query = country_names.get(code, code)
+    try:
+        result = _request('/network/find-provider-locations', api_base=api_base, timeout=timeout,
+                          client=client, body={'query': query, 'max_distance_fraction': 1,
+                                              'enable_max_distance_fraction': True})
+        locs = result.get('locations', [])
+        candidates = []
+        for l in locs:
+            if l.get('location_type') not in ('city', 'region'):
+                continue
+            if l.get('country_code', '').upper() != code:
+                continue
+            if l.get('provider_count', 0) <= 0:
+                continue
+            reg = (l.get('region') or '').lower()
+            name = (l.get('name') or '').lower()
+            # For US, filter out Virginia/Ashburn/Dulles datacenter hubs
+            if code == 'US' and (reg == 'virginia' or 'ashburn' in name or 'dulles' in name):
+                continue
+            candidates.append(l)
+
+        if candidates:
+            with _COUNTRY_RESIDENTIAL_LOCK:
+                _COUNTRY_RESIDENTIAL_LOCS[code] = candidates
+            return list(candidates)
+    except Exception:
+        pass
+    return []

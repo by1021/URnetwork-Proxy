@@ -40,14 +40,19 @@ class MixedProxyServer:
         self.server = await asyncio.start_server(self._accept, bind_host, self.port, limit=HEADER_LIMIT)
         self.port = self.server.sockets[0].getsockname()[1]
 
+    def drain_active_connections(self):
+        """Cancel in-flight client proxy tunnel tasks to force reconnection on upstream switch."""
+        tasks = list(self.tasks)
+        for task in tasks:
+            task.cancel()
+
     async def close(self):
         if self.server:
             self.server.close()
             await self.server.wait_closed()
             self.server = None
+        self.drain_active_connections()
         tasks = list(self.tasks)
-        for task in tasks:
-            task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 

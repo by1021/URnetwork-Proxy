@@ -314,7 +314,11 @@ class URClient:
             "clients_reset": clients_reset
         }
 
-    def create_proxy(self, mode="best", target="", protocol="socks", location_id=None, gateway_name="", gateway_id="", **kwargs):
+    def rotate_proxy_exit(self, client_id):
+        """触发官方 unique_exit 轮换接口 POST /network/proxy/rotate-exit"""
+        return self._request("/network/proxy/rotate-exit", method="POST", body={"client_id": client_id})
+
+    def create_proxy(self, mode="best", target="", protocol="socks", location_id=None, gateway_name="", gateway_id="", residential_only=True, **kwargs):
         """
         分配代理节点
         mode: 'best' | 'country' | 'city'
@@ -337,16 +341,40 @@ class URClient:
             loc_label = "Best Available"
         elif mode == "country":
             country_code = (target or "US").strip().upper()
-            if not location_id:
-                from .locator import fetch_live_countries
-                match = next((c for c in fetch_live_countries(client=self) if c["code"] == country_code), None)
-                if not match:
-                    raise ValueError(f"国家 {country_code} 当前未返回可用位置")
-                location_id = match["location_id"]
-            init_state = {"location": {"connect_location_id": {"location_id": location_id},
-                                      "country_code": country_code.lower(), "location_type": "country"}}
-            target_desc = f"指定国家/地区 [{country_code}]"
-            loc_label = country_code
+            chosen_loc = None
+            if residential_only:
+                try:
+                    from .locator import get_residential_locations
+                    import random
+                    res_locs = get_residential_locations(country_code, client=self)
+                    if res_locs:
+                        chosen_loc = random.choice(res_locs)
+                except Exception:
+                    pass
+
+            if chosen_loc:
+                loc_id = chosen_loc["location_id"]
+                init_state = {
+                    "location": {
+                        "connect_location_id": {"location_id": loc_id},
+                        "name": chosen_loc.get("name"),
+                        "country_code": country_code.lower(),
+                        "location_type": chosen_loc.get("location_type", "city")
+                    }
+                }
+                target_desc = f"指定国家/地区 [{country_code}] · 住宅宽带 [{chosen_loc.get('name')}, {chosen_loc.get('region')}]"
+                loc_label = f"{country_code}-{chosen_loc.get('name')}"
+            else:
+                if not location_id:
+                    from .locator import fetch_live_countries
+                    match = next((c for c in fetch_live_countries(client=self) if c["code"] == country_code), None)
+                    if not match:
+                        raise ValueError(f"国家 {country_code} 当前未返回可用位置")
+                    location_id = match["location_id"]
+                init_state = {"location": {"connect_location_id": {"location_id": location_id},
+                                          "country_code": country_code.lower(), "location_type": "country"}}
+                target_desc = f"指定国家/地区 [{country_code}]"
+                loc_label = country_code
         elif mode == "city":
             cities = search_cities(target, client=self)
             if not cities:
@@ -375,21 +403,35 @@ class URClient:
         spec_suffix = f" {tag}" if tag else ""
         device_spec = f"ur.io proxy {proto_clean}{spec_suffix}"
 
+        is_pro = bool(self.jwt_payload.get("pro", False))
+        proxy_config = {
+            "enable_http": True,
+            "enable_socks": True,
+            "enable_wg": proto_clean == "wireguard",
+            "lock_caller_ip": False,
+            "initial_device_state": init_state
+        }
+        if is_pro:
+            proxy_config["unique_exit"] = True
+            proxy_config["unique_exit_replace"] = "manual"
+
         payload = {
             "description": description,
             "device_spec": device_spec,
-            "proxy_config": {
-                "enable_http": True,
-                "enable_socks": True,
-                "enable_wg": proto_clean == "wireguard",
-                "lock_caller_ip": False,
-                "initial_device_state": init_state
-            },
+            "proxy_config": proxy_config,
             "time_zone": "Asia/Shanghai",
             "locale": "zh-CN"
         }
 
-        res = self._request("/network/auth-client", method="POST", body=payload)
+        try:
+            res = self._request("/network/auth-client", method="POST", body=payload)
+        except Exception as exc:
+            if is_pro and "unique" in str(exc).lower():
+                proxy_config.pop("unique_exit", None)
+                proxy_config.pop("unique_exit_replace", None)
+                res = self._request("/network/auth-client", method="POST", body=payload)
+            else:
+                raise
         p = res.get("proxy_config_result")
         if not p:
             err = res.get("error", {})

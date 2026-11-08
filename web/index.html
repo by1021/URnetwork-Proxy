@@ -9,7 +9,7 @@
   <title>URnetwork · 网关控制台</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='10' fill='%232e62ef'/%3E%3Cpath d='M9 9v9a7 7 0 0 0 14 0V9' fill='none' stroke='white' stroke-width='4'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/style.css?v=20261101.2">
-  <script src="/app.js?v=20261101.2" defer></script>
+  <script src="/app.js?v=20261107.1" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -154,7 +154,7 @@
   <dialog id="gateway-dialog" aria-labelledby="gateway-dialog-heading">
     <form id="gateway-form" novalidate>
       <div class="dialog-heading"><div><h2 id="gateway-dialog-heading">新建网关</h2></div><button class="icon-button" id="gateway-close" type="button" aria-label="关闭网关表单">×</button></div>
-      <fieldset id="gateway-fields"><label for="gateway-name">网关名称</label><input id="gateway-name" type="text" maxlength="100" required placeholder="例如：东京" autocomplete="off"><div class="form-row"><div><label>监听网络</label><input type="text" value="IPv4 / IPv6 · 全接口" disabled readonly><input type="hidden" id="gateway-host" value="::"></div><div><label for="gateway-port">本地端口</label><input id="gateway-port" type="number" min="1" max="65535" step="1" value="10801" required inputmode="numeric" aria-describedby="port-error"><p id="port-error" class="field-error" role="alert" hidden></p></div></div><div class="form-row"><div><label for="gateway-username">代理用户名（可选）</label><input id="gateway-username" type="text" maxlength="64" placeholder="留空表示免密" autocomplete="off"></div><div><label for="gateway-password">代理密码（可选）</label><input id="gateway-password" type="text" maxlength="64" placeholder="留空表示免密" autocomplete="off"></div></div><p class="field-hint">全接口监听，远程访问建议设置代理密码。</p><label for="gateway-mode">出口选择</label><select id="gateway-mode"><option value="country">指定国家 / 地区</option><option value="best">自动选择</option></select><div id="country-picker">
+      <fieldset id="gateway-fields"><label for="gateway-name">网关名称</label><input id="gateway-name" type="text" maxlength="100" required placeholder="例如：东京" autocomplete="off"><div class="form-row"><div><label>监听网络</label><input type="text" value="IPv4 / IPv6 · 全接口" disabled readonly><input type="hidden" id="gateway-host" value="::"></div><div><label for="gateway-port">本地端口</label><input id="gateway-port" type="number" min="1" max="65535" step="1" value="31000" required inputmode="numeric" aria-describedby="port-error"><p id="port-error" class="field-error" role="alert" hidden></p></div></div><div class="form-row"><div><label for="gateway-username">代理用户名（可选）</label><input id="gateway-username" type="text" maxlength="64" placeholder="留空表示免密" autocomplete="off"></div><div><label for="gateway-password">代理密码（可选）</label><input id="gateway-password" type="text" maxlength="64" placeholder="留空表示免密" autocomplete="off"></div></div><p class="field-hint">全接口监听，远程访问建议设置代理密码。</p><label for="gateway-mode">出口选择</label><select id="gateway-mode"><option value="country">指定国家 / 地区</option><option value="best">自动选择</option></select><div id="country-picker">
             <div class="country-picker-header">
               <label for="gateway-country-search">搜索国家 / 地区</label>
               <div class="country-picker-sort">
@@ -172,7 +172,7 @@
             <p id="country-picker-note" class="field-hint"></p>
             <p id="country-picker-error" class="field-error" role="alert" hidden></p>
             <p class="field-hint">仅在指定国家内换线。</p>
-          </div><label class="check-label" for="gateway-auto-heal"><input id="gateway-auto-heal" type="checkbox" checked><span>启用自动恢复<small>连续失败后自动换线。</small></span></label><div class="form-row" id="heal-options"><div><label for="gateway-interval">检查间隔（秒）</label><input id="gateway-interval" type="number" min="5" max="3600" step="1" value="30" required></div><div><label for="gateway-failures">连续失败阈值（次）</label><input id="gateway-failures" type="number" min="1" max="100" step="1" value="3" required></div></div></fieldset><p id="gateway-error" class="notice error" role="alert" hidden></p><div class="dialog-footer"><button id="gateway-cancel" class="button secondary" type="button">取消</button><button id="gateway-save" class="button primary" type="submit">创建并启动</button></div>
+          </div><label class="check-label" for="gateway-residential-only"><input id="gateway-residential-only" type="checkbox" checked><span>仅住宅宽带 (家宽)<small>智能过滤数据中心与机房 IP，优先锁定住宅家庭宽带。</small></span></label><label class="check-label" for="gateway-auto-heal"><input id="gateway-auto-heal" type="checkbox" checked><span>启用自动恢复<small>连续失败后自动换线。</small></span></label><div class="form-row" id="heal-options"><div><label for="gateway-interval">检查间隔（秒）</label><input id="gateway-interval" type="number" min="5" max="3600" step="1" value="30" required></div><div><label for="gateway-failures">连续失败阈值（次）</label><input id="gateway-failures" type="number" min="1" max="100" step="1" value="3" required></div></div></fieldset><p id="gateway-error" class="notice error" role="alert" hidden></p><div class="dialog-footer"><button id="gateway-cancel" class="button secondary" type="button">取消</button><button id="gateway-save" class="button primary" type="submit">创建并启动</button></div>
     </form>
   </dialog>
 

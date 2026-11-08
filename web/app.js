@@ -449,14 +449,15 @@
 
   function gatewayLayout(gateway) {
     // Only telemetry can be patched without rebuilding action/address closures.
-    const { connections, latency_ms, exit_ip, failures, rotations, last_check, ...layout } = gateway;
+    const { connections, latency_ms, exit_ip, isp, is_residential, failures, rotations, last_check, ...layout } = gateway;
     return JSON.stringify([layout, state.pending.has(String(gateway.id)), state.errors.get(String(gateway.id))]);
   }
 
   function updateGatewayLive(card, gateway) {
     const parts = gatewayLiveParts.get(card);
     if (!parts || parts.layout !== gatewayLayout(gateway)) return false;
-    setText(parts.facts[0], gateway.exit_ip || '等待连接');
+    const ipStr = gateway.exit_ip ? `${gateway.exit_ip}${gateway.isp ? ' · ' + gateway.isp : ''}` : '等待连接';
+    setText(parts.facts[0], ipStr);
     setText(parts.facts[1], amount(gateway.latency_ms, ' ms'));
     setText(parts.facts[2], amount(gateway.connections));
     setText(parts.meta[1], `失败 ${amount(gateway.failures)} / ${amount(gateway.failures_before_rotate)}`);
@@ -472,7 +473,9 @@
     const header = node('div', 'gateway-card-head');
     const identity = node('div', 'gateway-identity');
     const title = node('h3', '', gateway.name || '未命名网关'); title.title = gateway.name || '未命名网关';
-    identity.append(title, node('p', '', gateway.mode === 'best' ? '自动选择' : regionName(gateway.country_code)));
+    const modeLabel = gateway.mode === 'best' ? '自动选择' : regionName(gateway.country_code);
+    const resTag = gateway.is_residential ? ' · 🏠 家宽' : (gateway.exit_ip ? ' · 🏢 机房' : '');
+    identity.append(title, node('p', '', modeLabel + resTag));
     const [label, tone] = gatewayStatus(gateway);
     const badge = node('span', `badge ${tone}`); badge.append(node('span', 'badge-dot'), document.createTextNode(label));
     header.append(node('span', `country-emblem${gateway.mode === 'best' ? ' auto' : ''}`, gateway.mode === 'best' ? '◎' : gateway.country_code || '—'), identity, badge);
@@ -492,7 +495,7 @@
 
   function gatewayFacts(gateway) {
     const facts = node('dl', 'gateway-facts');
-    [['出口 IP', gateway.exit_ip || '等待连接'], ['网络延迟', amount(gateway.latency_ms, ' ms')], ['活动连接', amount(gateway.connections)], ['本地端口', gateway.port]].forEach(([label, value]) => {
+    [['出口 IP', gateway.exit_ip ? `${gateway.exit_ip}${gateway.isp ? ' · ' + gateway.isp : ''}` : '等待连接'], ['网络延迟', amount(gateway.latency_ms, ' ms')], ['活动连接', amount(gateway.connections)], ['本地端口', gateway.port]].forEach(([label, value]) => {
       const item = node('div'); item.append(node('dt', '', label), node('dd', '', value)); facts.append(item);
     });
     return facts;
@@ -573,7 +576,13 @@
     try {
       await api(`/api/gateways/${encodeURIComponent(id)}/${action}`, 'POST', {});
       await refreshAfterMutation(); loadEvents();
-      if (state.authenticated) toast({ start: '启动请求已完成', stop: '停止请求已完成', rotate: '换线请求已完成；新出口 IP 不保证变化', check: '健康检查已完成' }[action]);
+      if (state.authenticated) {
+        if (action === 'rotate' && res && res.exit_ip) {
+          toast(`换线完成！当前出口 IP: ${res.exit_ip}${res.isp ? ' (' + res.isp + ')' : ''}`);
+        } else {
+          toast({ start: '启动请求已完成', stop: '停止请求已完成', rotate: '换线成功，已切换至新出口 IP', check: '健康检查已完成' }[action]);
+        }
+      }
     } catch (error) {
       if (!isCancelled(error) && state.authenticated) state.errors.set(id, error.message);
     } finally {
@@ -703,6 +712,7 @@
     if ($('gateway-username')) $('gateway-username').value = gateway?.username || '';
     if ($('gateway-password')) $('gateway-password').value = gateway?.password || '';
     $('gateway-mode').value = gateway?.mode || 'country';
+    if ($('gateway-residential-only')) $('gateway-residential-only').checked = gateway?.residential_only ?? true;
     $('gateway-auto-heal').checked = gateway?.auto_heal ?? true;
     $('gateway-interval').value = gateway?.interval ?? 30;
     $('gateway-failures').value = gateway?.failures_before_rotate ?? 3;
@@ -749,7 +759,7 @@
       if (!country && selected && selected === String(state.editing?.location_id)) country = { code: state.editing.country_code, location_id: state.editing.location_id };
       if (!country || !selected) { message('country-picker-error', '请选择国家 / 地区；若列表为空，请刷新位置数据。'); $('gateway-country').focus(); return null; }
     }
-    return { name, host, port, mode, country_code: country?.code || '', location_id: country?.location_id || '', auto_heal: $('gateway-auto-heal').checked, interval, failures_before_rotate: failures, enabled: state.editing?.enabled ?? true, username, password };
+    return { name, host, port, mode, country_code: country?.code || '', location_id: country?.location_id || '', auto_heal: $('gateway-auto-heal').checked, residential_only: Boolean($('gateway-residential-only')?.checked ?? true), interval, failures_before_rotate: failures, enabled: state.editing?.enabled ?? true, username, password };
   }
 
   async function saveGateway(event) {
