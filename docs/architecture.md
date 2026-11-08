@@ -5,7 +5,7 @@
 | 官方接口 | `core/client.py` | 认证、GET 401 有界重登、位置绑定创建、指定 client_id 回收；创建 POST 不盲重放 |
 | 国家目录 | `core/locator.py` | provider-locations 全量国家、原始 provider_count、刷新时间及过期状态 |
 | 数据面 | `core/multiplexer.py`、`core/protocol.py` | asyncio 单 TCP 端口识别 HTTP / SOCKS5；鉴权、完整握手、背压、半关闭 |
-| 健康检查 | `core/checker.py` | HTTP CONNECT / SOCKS5 CONNECT → TLS 校验证书 → 出口 IP；两个探针交叉确认 |
+| 健康检查 | `core/checker.py` | 有界 HTTP / SOCKS5 / HTTPS 协议探测 → 各成功协议出口 IP → 证书校验的 HTTPS 国家查询；国家与来源最多缓存 5 分钟，明文 ISP 数据不参与国家判定 |
 | 生命周期 | `core/gateway.py` | 配置、每网关操作锁、候选验证、原子换线、所有权登记、延迟清理、恢复和退避 |
 | 本地管理 | `core/web_server.py` | 事件循环桥接、回环 REST API、管理会话、CSRF、配置面板 API、静态资源 |
 | 配置编辑 | `core/config.py`、`core/config_editor.py` | 字符串感知 JSONC 解析、字段校验、版本冲突检查、认证字段遮罩、旧凭据迁移 |
@@ -20,8 +20,8 @@
 ## 数据流与不变量
 
 客户端 → 固定本地端口 → 协议处理器 → 当前远端代理 → 目标。
-国家绑定作用于创建参数 `connect_location_id.location_id`，不只是显示国家名。
-接入时读取当前上游，建立后的 TCP 流固定使用该上游。候选未通过完整检查时保留旧上游与旧绑定。
+国家绑定作用于创建参数 `connect_location_id.location_id`，不只是显示国家名；显式国家位置不被住宅城市优选覆盖。指定国家网关只发布各协议实测国家均匹配的候选，住宅 ISP 优选回退也不放宽国家约束。
+接入时读取当前上游，建立后的 TCP 流固定使用该上游。候选未通过完整检查时保留已验证的旧上游与旧绑定；已运行上游的可用出口国家漂移或国家未验证时立即撤下并断开旧隧道，不受其他协议断线影响；完全断线沿用原失败阈值。API 的 `country_code` 是请求国家，`exit_country_code` 与 `country_source` 是实测数据，不混用。
 
 管理器使用单个 asyncio 循环；阻塞的官方请求在线程执行。URClient 的认证和请求由 RLock 保护；更新凭据时禁止并发网关操作。
 管理 API 对同一网关的 PUT 串行执行读取、合并、国家校验和提交；不同网关独立。高级本地代理密码仅驻留内存，保存鉴权需求标记，重启时在凭据补齐前禁止监听，不自动降级免密。

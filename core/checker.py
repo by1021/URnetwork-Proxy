@@ -8,6 +8,7 @@ import socket
 import ssl
 import time
 import urllib.request
+from urllib.parse import urlsplit
 
 
 def _remaining(deadline):
@@ -219,19 +220,39 @@ def test_full_proxy(host, http_port, socks_port, token, password='none', timeout
 
 _IP_INFO_CACHE = {}
 _IP_INFO_LOCK = threading.Lock()
+_IP_INFO_TTL = 300.0
+
+
+def _country_code(value):
+    code = str(value or "").strip().upper()
+    return code if len(code) == 2 and code.isascii() and code.isalpha() else ""
+
+
+def _cache_ip_info(ip, info):
+    # Unknown/failed lookups must be retried, not cached as permanent geography.
+    if info.get("country_code"):
+        with _IP_INFO_LOCK:
+            if len(_IP_INFO_CACHE) >= 1024:
+                _IP_INFO_CACHE.pop(next(iter(_IP_INFO_CACHE)))
+            _IP_INFO_CACHE[ip] = (time.monotonic(), info)
+    return dict(info)
 
 
 def inspect_ip_quality(ip: str, timeout: float = 3.0) -> dict:
-    """Inspect IP quality: ISP, organization, and residential classification."""
+    """Inspect ISP quality; only verified HTTPS geography can assert a country."""
     if not ip or not isinstance(ip, str):
-        return {"ip": ip, "is_residential": False, "isp": "", "org": "", "city": "", "region": ""}
+        return {"ip": ip, "is_residential": False, "isp": "", "org": "", "city": "", "region": "",
+                "country_code": "", "country_source": ""}
 
     with _IP_INFO_LOCK:
-        if ip in _IP_INFO_CACHE:
-            return dict(_IP_INFO_CACHE[ip])
+        cached = _IP_INFO_CACHE.get(ip)
+        if cached and time.monotonic() - cached[0] < _IP_INFO_TTL:
+            return dict(cached[1])
 
-    info = {"ip": ip, "is_residential": False, "isp": "", "org": "", "city": "", "region": ""}
-    # 1. Query ip-api.com
+    info = {"ip": ip, "is_residential": False, "isp": "", "org": "", "city": "", "region": "",
+            "country_code": "", "country_source": ""}
+    quality_from_ip_api = False
+    # Keep the existing ISP preference metadata, never its plaintext country.
     try:
         url = f"http://ip-api.com/json/{ip}?fields=status,isp,org,as,hosting,city,regionName"
         req = urllib.request.Request(url, headers={"User-Agent": "curl/7.88.1"})
@@ -264,45 +285,41 @@ def inspect_ip_quality(ip: str, timeout: float = 3.0) -> dict:
                     "isp": isp or org,
                     "org": org,
                     "city": data.get("city", ""),
-                    "region": data.get("regionName", "")
+                    "region": data.get("regionName", ""),
+                    "country_code": "",
+                    "country_source": "",
                 }
-                with _IP_INFO_LOCK:
-                    _IP_INFO_CACHE[ip] = info
-                return dict(info)
+                quality_from_ip_api = True
     except Exception:
         pass
 
-    # 2. Fallback to ipinfo.io
+    # Country is always obtained over certificate-verified HTTPS, including when
+    # the optional ISP query succeeded. Reject any downgrade/foreign redirect.
     try:
         url = f"https://ipinfo.io/{ip}/json"
         req = urllib.request.Request(url, headers={"User-Agent": "curl/7.88.1"})
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(req, timeout=timeout) as resp:
+            final_url = urlsplit(resp.geturl())
+            if final_url.scheme != "https" or final_url.hostname != "ipinfo.io":
+                raise ValueError("Untrusted geography response URL")
             data = json.loads(resp.read().decode())
-            org = data.get("org", "")
-            hostname = data.get("hostname", "")
-            text = f"{org} {hostname}".lower()
-            dc_kw = ("gocodeit", "ionos", "hetzner", "ovh", "digitalocean", "amazon", "hosting", "datacenter", "cloud")
-            is_dc = any(k in text for k in dc_kw)
-            res_kw = ("comcast", "charter", "spectrum", "at&t", "verizon", "cox", "sparklight", "cable", "res.")
-            is_res = any(k in text for k in res_kw) or not is_dc
-            info = {
-                "ip": ip,
-                "is_residential": is_res,
-                "is_datacenter": is_dc,
-                "isp": org,
-                "org": org,
-                "city": data.get("city", ""),
-                "region": data.get("region", "")
-            }
-            with _IP_INFO_LOCK:
-                _IP_INFO_CACHE[ip] = info
-            return dict(info)
+            if not quality_from_ip_api:
+                org = data.get("org", "")
+                hostname = data.get("hostname", "")
+                text = f"{org} {hostname}".lower()
+                dc_kw = ("gocodeit", "ionos", "hetzner", "ovh", "digitalocean", "amazon", "hosting", "datacenter", "cloud")
+                is_dc = any(k in text for k in dc_kw)
+                res_kw = ("comcast", "charter", "spectrum", "at&t", "verizon", "cox", "sparklight", "cable", "res.")
+                is_res = any(k in text for k in res_kw) or not is_dc
+                info.update(is_residential=is_res, is_datacenter=is_dc, isp=org,
+                            org=org, city=data.get("city", ""), region=data.get("region", ""))
+            country = _country_code(data.get("country"))
+            info.update(country_code=country, country_source="ipinfo.io" if country else "")
+            return _cache_ip_info(ip, info)
     except Exception:
         pass
 
-    with _IP_INFO_LOCK:
-        _IP_INFO_CACHE[ip] = info
     return dict(info)
 
 async def probe_upstream(upstream, timeout=15):
@@ -323,11 +340,19 @@ async def probe_upstream(upstream, timeout=15):
                 return last
         return last
 
-    coros = [one(test_http_proxy, upstream['http_port']),
-             one(test_socks5_proxy, upstream['socks_port'])]
+    async def bounded_one(fn, port, **kw):
+        # One slow leg must not consume the manager's whole probe deadline and
+        # hide another leg's live exit country. Fast-failure retries remain.
+        try:
+            return await asyncio.wait_for(one(fn, port, **kw), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False, None, 'Probe timeout'
+
+    coros = [bounded_one(test_http_proxy, upstream['http_port']),
+             bounded_one(test_socks5_proxy, upstream['socks_port'])]
     has_https = bool(upstream.get('https_port'))
     if has_https:
-        coros.append(one(test_https_proxy, upstream['https_port']))
+        coros.append(bounded_one(test_https_proxy, upstream['https_port']))
 
     results = await asyncio.gather(*coros)
     http, socks = results[0], results[1]
@@ -341,9 +366,20 @@ async def probe_upstream(upstream, timeout=15):
 
     exit_ip = socks[2] if socks[0] else (http[2] if http[0] else (https[2] if https[0] else ''))
     ip_info = {}
-    if ok and exit_ip:
+    country_codes = {}
+    if exit_ip:
         try:
-            ip_info = await asyncio.to_thread(inspect_ip_quality, exit_ip)
+            protocol_results = {'http': http, 'socks': socks}
+            if has_https:
+                protocol_results['https'] = https
+            protocol_ips = {protocol: result[2] for protocol, result in protocol_results.items() if result[0]}
+            # Hosted proxies can use different exits for different protocol legs.
+            ips = list(dict.fromkeys(protocol_ips.values()))
+            infos = await asyncio.gather(*(asyncio.to_thread(inspect_ip_quality, ip) for ip in ips),
+                                         return_exceptions=True)
+            by_ip = {ip: info if isinstance(info, dict) else {} for ip, info in zip(ips, infos)}
+            ip_info = by_ip[exit_ip]
+            country_codes = {protocol: by_ip[ip].get('country_code', '') for protocol, ip in protocol_ips.items()}
         except Exception:
             pass
 
@@ -354,6 +390,9 @@ async def probe_upstream(upstream, timeout=15):
                 is_residential=bool(ip_info.get("is_residential", False)),
                 city=ip_info.get("city", ""),
                 region=ip_info.get("region", ""),
+                country_code=ip_info.get("country_code", ""),
+                country_source=ip_info.get("country_source", ""),
+                country_codes=country_codes,
                 latency_ms=max(http[1] or 0, socks[1] or 0, (https[1] or 0) if has_https else 0),
                 error='' if ok else err_str)
 

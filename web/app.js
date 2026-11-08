@@ -3,7 +3,7 @@
   'use strict';
 
   // Keep the entry URL's version in index.html in sync when releasing UI fixes.
-  const UI_VERSION = '20261108.1';
+  const UI_VERSION = '20261108.3';
   const POLL_MS = 5000;
   const ACCOUNT_MS = 60000;
   const COUNTRIES_MS = 300000;
@@ -32,6 +32,8 @@
     hourly_creation_limit: '已达每小时创建上限', remote_create_failed: '远端代理创建失败',
     invalid_create_response: '远端创建响应无效', duplicate_client_id: '远端返回重复的代理标识',
     candidate_probe_failed: '候选代理检查失败', upstream_probe_failed: '上游健康检查失败',
+    exit_country_mismatch: '出口国家与所选国家不一致，已拦截；只重试所选国家节点',
+    exit_country_unverified: '出口国家暂未验证，已暂停连接；等待国家数据恢复后重试',
     state_write_failed: '网关状态保存失败', orphan_cleanup_pending: '历史资源回收中，等待完成',
     local_credentials_required: '需通过 API 重新提供本地代理密码，已阻止免密恢复'
   };
@@ -297,6 +299,7 @@
     if (state.loggingIn) return;
     state.loggingIn = true;
     $('login-submit').disabled = true;
+    $('login-submit').textContent = credentials ? '登录中…' : '连接中…';
     $('login-username').disabled = true;
     $('login-password').disabled = true;
     $('login-status').textContent = '正在验证会话…';
@@ -320,6 +323,7 @@
       $('login-password').value = '';
       state.loggingIn = false;
       $('login-submit').disabled = false;
+      $('login-submit').textContent = '登录';
       $('login-username').disabled = false;
       $('login-password').disabled = false;
       $('login-status').textContent = '';
@@ -449,7 +453,7 @@
 
   function gatewayLayout(gateway) {
     // Only telemetry can be patched without rebuilding action/address closures.
-    const { connections, latency_ms, exit_ip, isp, is_residential, failures, rotations, last_check, ...layout } = gateway;
+    const { connections, latency_ms, exit_ip, exit_country_code, country_source, isp, is_residential, failures, rotations, last_check, ...layout } = gateway;
     return JSON.stringify([layout, state.pending.has(String(gateway.id)), state.errors.get(String(gateway.id))]);
   }
 
@@ -460,6 +464,8 @@
     setText(parts.facts[0], ipStr);
     setText(parts.facts[1], amount(gateway.latency_ms, ' ms'));
     setText(parts.facts[2], amount(gateway.connections));
+    setText(parts.facts[4], measuredCountry(gateway));
+    setText(parts.facts[5], gateway.country_source || '—');
     setText(parts.meta[1], `失败 ${amount(gateway.failures)} / ${amount(gateway.failures_before_rotate)}`);
     setText(parts.meta[2], `换线 ${amount(gateway.rotations)} 次`);
     setText(parts.lastCheck, `上次检查 ${dateText(gateway.last_check)}`);
@@ -495,10 +501,14 @@
 
   function gatewayFacts(gateway) {
     const facts = node('dl', 'gateway-facts');
-    [['出口 IP', gateway.exit_ip ? `${gateway.exit_ip}${gateway.isp ? ' · ' + gateway.isp : ''}` : '等待连接'], ['网络延迟', amount(gateway.latency_ms, ' ms')], ['活动连接', amount(gateway.connections)], ['本地端口', gateway.port]].forEach(([label, value]) => {
+    [['出口 IP', gateway.exit_ip ? `${gateway.exit_ip}${gateway.isp ? ' · ' + gateway.isp : ''}` : '等待连接'], ['网络延迟', amount(gateway.latency_ms, ' ms')], ['活动连接', amount(gateway.connections)], ['本地端口', gateway.port], ['实测国家', measuredCountry(gateway)], ['国家数据来源', gateway.country_source || '—']].forEach(([label, value]) => {
       const item = node('div'); item.append(node('dt', '', label), node('dd', '', value)); facts.append(item);
     });
     return facts;
+  }
+
+  function measuredCountry(gateway) {
+    return gateway.exit_country_code ? `${regionName(gateway.exit_country_code)} (${gateway.exit_country_code})` : '待验证';
   }
 
   function gatewayAddresses(gateway) {
@@ -514,13 +524,12 @@
     const authPrefix = hasAuth ? `${encodeURIComponent(gateway.username)}:${encodeURIComponent(gateway.password)}@` : '';
     for (const [label, protocol] of [['HTTP', 'http'], ['HTTPS', 'https'], ['SOCKS5', 'socks5']]) {
       const address = `${protocol}://${authPrefix}${host}:${gateway.port}`;
-      const row = node('div', 'address-row');
-      const code = node('code', '', `${authPrefix}${host}:${gateway.port}`); code.title = address;
-      const button = node('button', 'copy-button', '复制'); button.type = 'button';
-      button.dataset.action = `copy-${protocol}`;
-      button.setAttribute('aria-label', `复制 ${gateway.name} 的 ${label} 地址`);
-      button.addEventListener('click', () => copyAddress(address));
-      row.append(node('span', 'address-kind', label), code, button); container.append(row);
+      const row = node('button', 'address-row'); row.type = 'button'; row.title = address;
+      row.dataset.action = `copy-${protocol}`;
+      row.setAttribute('aria-label', `复制 ${gateway.name} 的 ${label} 地址`);
+      row.addEventListener('click', () => copyAddress(address));
+      const hint = node('span', 'copy-button', '复制'); hint.setAttribute('aria-hidden', 'true');
+      row.append(node('span', 'address-kind', label), node('code', '', address), hint); container.append(row);
     }
     container.append(node('p', 'field-hint', 'HTTPS 为到代理的 TLS 加密；自签名证书需导入信任，远程访问请配置匹配主机名的证书。'));
     if (hasAuth) {
@@ -550,15 +559,51 @@
     return actions;
   }
 
-  async function copyAddress(address) {
+  // Ordinary HTTP does not expose Clipboard API. Selection-based copy must run
+  // inside the click/touch gesture, with a rendered readonly field for mobile.
+  function copyWithSelection(address) {
+    if (typeof document.execCommand !== 'function') return false;
+    const active = document.activeElement;
+    const selection = window.getSelection();
+    const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i).cloneRange()) : [];
+    const fieldSelection = typeof active?.selectionStart === 'number'
+      ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
+    const scroll = [window.scrollX, window.scrollY];
+    const buffer = node('textarea', 'clipboard-buffer');
+    buffer.value = address; buffer.readOnly = true; buffer.tabIndex = -1;
+    buffer.setAttribute('aria-label', '代理地址');
+    document.body.append(buffer);
     try {
-      if (!navigator.clipboard?.writeText) throw new Error('剪贴板不可用');
-      await navigator.clipboard.writeText(address); toast('代理地址已复制');
-    } catch {
-      $('copy-value').value = address;
-      if (!$('copy-dialog').open) $('copy-dialog').showModal();
-      $('copy-value').focus(); $('copy-value').select();
+      buffer.focus({ preventScroll: true }); buffer.select();
+      buffer.setSelectionRange(0, address.length);
+      return document.execCommand('copy');
+    } catch { return false; } finally {
+      buffer.remove();
+      if (active?.isConnected) active.focus({ preventScroll: true });
+      if (selection) {
+        selection.removeAllRanges();
+        ranges.forEach((range) => selection.addRange(range));
+      }
+      if (fieldSelection && active.isConnected) active.setSelectionRange(...fieldSelection);
+      window.scrollTo(...scroll);
     }
+  }
+
+  async function copyAddress(address) {
+    const epoch = state.epoch;
+    let copied = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(address);
+        copied = true;
+      }
+    } catch { /* Try the selection-based path before asking for manual copy. */ }
+    if (epoch !== state.epoch || !state.authenticated) return;
+    if (copied || copyWithSelection(address)) { toast('代理地址已复制'); return; }
+    $('copy-value').value = address;
+    if (!$('copy-dialog').open) $('copy-dialog').showModal();
+    $('copy-value').focus(); $('copy-value').select();
+    $('copy-value').setSelectionRange(0, address.length);
   }
 
   async function refreshAfterMutation() {
@@ -577,7 +622,9 @@
       const res = await api(`/api/gateways/${encodeURIComponent(id)}/${action}`, 'POST', {});
       await refreshAfterMutation(); loadEvents();
       if (state.authenticated) {
-        if (action === 'rotate' && res && res.exit_ip) {
+        if (res?.last_error) {
+          toast(eventMessage(res.last_error));
+        } else if (action === 'rotate' && res && res.exit_ip) {
           toast(`换线完成！当前出口 IP: ${res.exit_ip}${res.isp ? ' (' + res.isp + ')' : ''}`);
         } else {
           toast({ start: '启动请求已完成', stop: '停止请求已完成', rotate: '换线成功，已切换至新出口 IP', check: '健康检查已完成' }[action]);
@@ -707,7 +754,7 @@
     $('gateway-name').value = gateway?.name || '';
     if ($('gateway-host')) $('gateway-host').value = gateway?.host || '::';
     const used = new Set(state.gateways.map((item) => Number(item.port)));
-    let port = 10801; while (used.has(port) && port < 65535) port += 1;
+    let port = Number($('gateway-port').defaultValue); while (used.has(port) && port < 65535) port += 1;
     $('gateway-port').value = gateway?.port ?? port;
     if ($('gateway-username')) $('gateway-username').value = gateway?.username || '';
     if ($('gateway-password')) $('gateway-password').value = gateway?.password || '';
@@ -777,10 +824,10 @@
     $('gateway-save').textContent = '正在保存…';
     updateCredentialLock();
     try {
-      await api(editing ? `/api/gateways/${encodeURIComponent(id)}` : '/api/gateways', editing ? 'PUT' : 'POST', payload);
+      const result = await api(editing ? `/api/gateways/${encodeURIComponent(id)}` : '/api/gateways', editing ? 'PUT' : 'POST', payload);
       $('gateway-dialog').close();
       await refreshAfterMutation(); loadEvents();
-      if (state.authenticated) toast(editing ? '网关设置已保存' : '网关已创建');
+      if (state.authenticated) toast(result?.last_error ? eventMessage(result.last_error) : editing ? '网关设置已保存' : '网关已创建');
     } catch (error) {
       if (!isCancelled(error) && state.authenticated) message('gateway-error', error.message);
     } finally {

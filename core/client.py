@@ -328,6 +328,7 @@ class URClient:
         init_state = {}
         target_desc = ""
         loc_label = ""
+        country_code = ""
 
         if mode == "best":
             init_state = {
@@ -342,7 +343,8 @@ class URClient:
         elif mode == "country":
             country_code = (target or "US").strip().upper()
             chosen_loc = None
-            if residential_only:
+            # A gateway's explicit country binding wins over CLI city heuristics.
+            if residential_only and not location_id:
                 try:
                     from .locator import get_residential_locations
                     import random
@@ -353,10 +355,10 @@ class URClient:
                     pass
 
             if chosen_loc:
-                loc_id = chosen_loc["location_id"]
+                location_id = chosen_loc["location_id"]
                 init_state = {
                     "location": {
-                        "connect_location_id": {"location_id": loc_id},
+                        "connect_location_id": {"location_id": location_id},
                         "name": chosen_loc.get("name"),
                         "country_code": country_code.lower(),
                         "location_type": chosen_loc.get("location_type", "city")
@@ -375,6 +377,7 @@ class URClient:
                                           "country_code": country_code.lower(), "location_type": "country"}}
                 target_desc = f"指定国家/地区 [{country_code}]"
                 loc_label = country_code
+            init_state["country_code"] = country_code.lower()
         elif mode == "city":
             cities = search_cities(target, client=self)
             if not cities:
@@ -448,7 +451,7 @@ class URClient:
         return {
             "mode": mode,
             "location_id": location_id,
-            "country_code": target.upper() if mode == "country" else "",
+            "country_code": country_code,
             "target_desc": target_desc,
             "client_id": res.get("client_id"),
             "description": description,

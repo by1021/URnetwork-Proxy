@@ -149,6 +149,8 @@ class _Gateway:
     auth_missing: bool = False
     status: str = "stopped"
     exit_ip: str = ""
+    exit_country_code: str = ""
+    country_source: str = ""
     latency_ms: float = 0.0
     last_check: str | None = None
     failures: int = 0
@@ -240,6 +242,7 @@ class GatewayManager:
     def _snapshot(self, g: _Gateway) -> dict[str, Any]:
         result = {key: g.config[key] for key in CONFIG_DEFAULTS}
         result.update(id=g.id, created_at=g.created_at, status=g.status, exit_ip=g.exit_ip,
+                      exit_country_code=g.exit_country_code, country_source=g.country_source,
                       latency_ms=g.latency_ms, last_check=g.last_check, failures=g.failures,
                       rotations=g.rotations, last_error=g.last_error,
                       isp=getattr(g, "isp", ""),
@@ -588,16 +591,27 @@ class GatewayManager:
                          is_rotation: bool = False) -> tuple[dict[str, Any], dict[str, Any]] | None:
         old_ip = g.exit_ip if is_rotation else ""
         req_residential = bool(cfg.get("residential_only", True))
-        max_attempts = 4 if (is_rotation or req_residential) else 1
+        max_attempts = 4 if (is_rotation or req_residential or cfg["mode"] == "country") else 1
         best_candidate = None
+        country_failure = ""
 
         for attempt in range(max_attempts):
             candidate = await self._candidate_single(g, cfg, generation)
             if candidate is None:
-                continue
+                break
             upstream, result = candidate
             new_ip = result.get("exit_ip", "")
             is_res = result.get("is_residential", False)
+
+            # Country is a hard constraint, including the ISP-preference fallback.
+            error = self._country_error(cfg, result)
+            if error:
+                await self._discard(upstream["client_id"])
+                country_failure = error
+                self._failure(g, error, "degraded" if g.upstream else "error")
+                if error == "exit_country_unverified":
+                    break  # A geo lookup outage is not a reason to spend more slots.
+                continue
 
             # Rule 1: IP MUST CHANGE on rotate
             if old_ip and new_ip == old_ip:
@@ -619,7 +633,19 @@ class GatewayManager:
 
         if best_candidate is not None:
             return best_candidate
+        if country_failure:
+            self._backoff(g)
+            self._failure(g, country_failure, "degraded" if g.upstream else "error")
         return None
+
+    @staticmethod
+    def _country_error(cfg: dict[str, Any], result: dict[str, Any]) -> str:
+        if cfg["mode"] != "country":
+            return ""
+        codes = [result.get("country_code", ""), *result.get("country_codes", {}).values()]
+        if any(code and code != cfg["country_code"] for code in codes):
+            return "exit_country_mismatch"
+        return "exit_country_unverified" if any(not code for code in codes) else ""
 
     async def _probe_result(self, upstream: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -630,11 +656,31 @@ class GatewayManager:
             if not math.isfinite(latency) or latency < 0:
                 raise ValueError("invalid probe latency")
             is_res = result.get("is_residential", True if (ip.startswith("127.") or ip.startswith("1.2.")) else False)
+
+            def normalize(value):
+                code = str(value or "").strip().upper()
+                return code if re.fullmatch(r"[A-Z]{2}", code) else ""
+
+            country = normalize(result.get("country_code"))
+            countries = result.get("country_codes")
+            if countries is None:
+                countries = {"exit": country}  # Summary-only custom probes remain supported.
+            elif isinstance(countries, dict):
+                countries = {key: normalize(value) for key, value in countries.items()}
+                protocols = ("http", "socks", "https") if upstream.get("https_port") else ("http", "socks")
+                for key in protocols:
+                    if result.get(f"{key}_ok") is True:
+                        countries.setdefault(key, "")
+            else:
+                raise ValueError("invalid probe countries")
             return dict(ok=ok, exit_ip=ip, latency_ms=latency,
                         isp=result.get("isp", ""),
+                        country_code=country, country_codes=countries,
+                        country_source=str(result.get("country_source") or ""),
                         is_residential=bool(is_res))
         except Exception:
-            return dict(ok=False, exit_ip="", latency_ms=0.0, isp="", is_residential=False)
+            return dict(ok=False, exit_ip="", latency_ms=0.0, isp="", is_residential=False,
+                        country_code="", country_codes={}, country_source="")
 
     def _switch(self, g: _Gateway, candidate: tuple[dict[str, Any], dict[str, Any]]) -> None:
         upstream, result = candidate
@@ -672,6 +718,8 @@ class GatewayManager:
     def _apply_probe(self, g: _Gateway, result: dict[str, Any]) -> None:
         g.last_check = _timestamp()
         g.exit_ip, g.latency_ms = result["exit_ip"], result["latency_ms"]
+        g.exit_country_code = result.get("country_code", "")
+        g.country_source = result.get("country_source", "")
         g.isp = result.get("isp", "")
         g.is_residential = bool(result.get("is_residential", False))
 
@@ -697,6 +745,19 @@ class GatewayManager:
                 return self._snapshot(g)
             self._apply_probe(g, result)
             g.next_check = self._clock() + g.config["interval"]
+            # Every observed live exit needs a country check, independently of
+            # another leg's connectivity failure. Total outages keep retry rules.
+            country_error = self._country_error(g.config, result) if result["ok"] or result["exit_ip"] else ""
+            if country_error:
+                previous, g.upstream = g.upstream, None
+                g.revision += 1
+                if g.relay is not None and hasattr(g.relay, "drain_active_connections"):
+                    g.relay.drain_active_connections()
+                self._failure(g, country_error, "error")
+                await self._discard(previous["client_id"])
+                if g.config["auto_heal"] and self._alive(g, generation):
+                    await self._rotate(g, generation)
+                return self._snapshot(g)
             if result["ok"]:
                 g.failures, g.last_error, g.status = 0, "", "running"
             else:
@@ -831,6 +892,7 @@ class GatewayManager:
                 item.due = 0.0
         self._spawn(self._cleanup_due(gateway_id=g.id))
         g.status, g.exit_ip, g.latency_ms, g.failures = "stopped", "", 0.0, 0
+        g.exit_country_code, g.country_source = "", ""
         g.last_error = "owned_cleanup_pending" if any(o.gateway_id == g.id for o in self._owned.values()) else ""
         self._event(g.id, "info", "stopped")
 

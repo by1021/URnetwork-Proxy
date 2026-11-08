@@ -63,7 +63,7 @@
 - **🔀 单端口协议全复用 (Single-Port Mixed Multiplexing)**
   - 独创单端口透明协议嗅探机制：首字节自动识别 SOCKS5（`0x05`）、明文 HTTP（ASCII 字符）与 HTTPS 代理 TLS 握手（`0x16`），**同一本地端口同时处理 HTTPS 加密代理、HTTP 明文代理与 SOCKS5 代理连接**，无需为不同协议开放多组端口。
 - **🛡️ 多本地网关与智能自愈 (Multi-Gateway Engine & Auto-Healing)**
-  - 支持创建多个相互独立的本地监听网关（如 `10801` 绑定日本、`10802` 绑定美国），客户端只需连接固定本地端口。
+  - 支持创建多个相互独立的本地监听网关（如 `31000` 绑定日本、`31001` 绑定美国），客户端只需连接固定本地端口。
   - **故障自愈与平滑无缝换线**：后台定时多点探针检测，触发失败阈值后自动在云端申请并严格预检新候选链路；验证成功后平滑原子切换，老连接享受 30 秒排空保护，杜绝长连接突发雪崩。
 - **🖥️ 现代化 Web 控制台与双模式配置中心**
   - 提供响应式 Web 管理界面，支持可视化添加、编辑、启动、停止与手动重连网关。
@@ -93,8 +93,8 @@ flowchart TD
     end
 
     subgraph GatewayLayer [本地多网关与协议复用层 (core/multiplexer.py)]
-        G1[本地监听端口 10801<br/>HTTP / HTTPS / SOCKS5 混合]
-        G2[本地监听端口 10802<br/>HTTP / HTTPS / SOCKS5 混合]
+        G1[本地监听端口 31000<br/>HTTP / HTTPS / SOCKS5 混合]
+        G2[本地监听端口 31001<br/>HTTP / HTTPS / SOCKS5 混合]
         MUX{协议嗅探器<br/>First-Byte Sniffer}
         MUX -->|0x05| SOCKS[SOCKS5 CONNECT 处理器]
         MUX -->|ASCII| HTTP[HTTP / HTTPS CONNECT 处理器]
@@ -256,7 +256,7 @@ docker compose ps
 
 访问 <http://127.0.0.1:8777>，默认账号 `admin / admin`。首次登录后在配置面板填写上游凭据、修改管理密码，保存后立即生效（无需重启服务）。
 
-- 默认向宿主机全网卡（`0.0.0.0` 与 `::`）发布管理端口 `8777` 和代理端口 `10801–10810`，支持外网与局域网直接访问；在控制台创建网关时选择该端口范围。如需仅限本机回环访问，可在 `.env` 中设置 `URNETWORK_WEB_BIND=127.0.0.1` 与 `URNETWORK_GATEWAY_BIND=127.0.0.1`。
+- 默认向宿主机全网卡（`0.0.0.0` 与 `::`）发布管理端口 `8777` 和代理端口 `31000–31010`，支持外网与局域网直接访问；在控制台创建网关时选择该端口范围。如需仅限本机回环访问，可在 `.env` 中设置 `URNETWORK_WEB_BIND=127.0.0.1` 与 `URNETWORK_GATEWAY_BIND=127.0.0.1`。
 - 配置、网关状态和证书默认持久化挂载至本地 `./data` 目录（并在本地自动生成 `data/config.json`），容器重建后保留；也可在 `.env` 中通过 `URNETWORK_DATA_DIR` 改用命名卷。
 - 镜像非 root 运行，内置 OpenSSL 和健康检查，保留原有 CLI 使用方式。
 
@@ -270,11 +270,12 @@ docker compose ps
 
 ![控制台概览](docs/assets/dashboard.png)
 
-- **自定义独立端口**：可以任意创建多个网关（如 `10801`, `10802`, `10803`），分别指定不同出口国家或全球最佳链路。
+- **自定义独立端口**：可以任意创建多个网关（如 `31000`, `31001`, `31002`），分别指定不同出口国家或全球最佳链路。
+- **默认端口与国家核验**：新建默认从 `31000` 起并跳过已保存端口；编辑保持原端口。指定国家时先核对各协议的实际出口国家，再启用候选；跨国或未验证出口不静默接入。卡片分开显示所选国家、实测国家与地理数据来源。
 - **单端口全协议接入**：
   ```text
-  HTTP 代理地址:   http://127.0.0.1:10801
-  SOCKS5 代理地址: socks5://127.0.0.1:10801
+  HTTP 代理地址:   http://127.0.0.1:31000
+  SOCKS5 代理地址: socks5://127.0.0.1:31000
   ```
 - **自动监测与平滑换线**：
   - 默认每 30 秒执行一次双探针健康检查（验证代理鉴权、TLS 握手证书与出口 IP 反查）。
@@ -442,17 +443,17 @@ docker compose ps
 ## 🔌 第三方客户端与系统集成
 
 URnetwork-Proxy 支持**两种接入模式**：
-1. **本地多网关模式（推荐）**：客户端直连本机网关（如 `127.0.0.1:10801`），享受单端口 HTTP/HTTPS/SOCKS5 自动识别与后台断线自动换线自愈。
+1. **本地多网关模式（推荐）**：客户端直连本机网关（如 `127.0.0.1:31000`），享受单端口 HTTP/HTTPS/SOCKS5 自动识别与后台断线自动换线自愈。
 2. **云端直连模式**：通过 CLI 生成的标准代理串直接接入官方远端出口。
 
-以下演示接入本地网关（监听于 `127.0.0.1:10801`）与云端直连节点的调用方法：
+以下演示接入本地网关（监听于 `127.0.0.1:31000`）与云端直连节点的调用方法：
 
 ### 1. cURL 终端命令行
 
 ```bash
 # 模式 A: 接入本地自愈网关 (无需账号密码，同一个端口支持 HTTP 与 SOCKS5)
-curl -s -x "http://127.0.0.1:10801" https://api.ipify.org
-curl -s --socks5-hostname "127.0.0.1:10801" https://api.ipify.org
+curl -s -x "http://127.0.0.1:31000" https://api.ipify.org
+curl -s --socks5-hostname "127.0.0.1:31000" https://api.ipify.org
 
 # 模式 B: 直连云端住宅节点 (由 CLI 模式分配输出)
 curl -s -x "http://tok_abc123:none@node3.bringyour.com:18080" https://api.ipify.org
@@ -468,10 +469,10 @@ curl -s --socks5-hostname "tok_abc123:none@node3.bringyour.com:11080" https://ap
 ```python
 import requests
 
-# 接入本地自愈网关 (127.0.0.1:10801)
+# 接入本地自愈网关 (127.0.0.1:31000)
 proxies = {
-    "http": "http://127.0.0.1:10801",
-    "https": "http://127.0.0.1:10801",
+    "http": "http://127.0.0.1:31000",
+    "https": "http://127.0.0.1:31000",
 }
 
 resp = requests.get("https://httpbin.org/ip", proxies=proxies, timeout=15)
@@ -485,7 +486,7 @@ import asyncio
 import httpx
 
 async def main():
-    async with httpx.AsyncClient(proxy="http://127.0.0.1:10801", timeout=15) as client:
+    async with httpx.AsyncClient(proxy="http://127.0.0.1:31000", timeout=15) as client:
         resp = await client.get("https://httpbin.org/ip")
         print("HTTPX 出口 IP:", resp.json()["origin"])
 
@@ -500,7 +501,7 @@ import aiohttp
 from aiohttp_socks import ProxyConnector
 
 async def main():
-    connector = ProxyConnector.from_url("socks5://127.0.0.1:10801")
+    connector = ProxyConnector.from_url("socks5://127.0.0.1:31000")
     async with aiohttp.ClientSession(connector=connector) as session:
         async with session.get("https://api.ipify.org?format=json") as resp:
             data = await resp.json()
@@ -522,7 +523,7 @@ with sync_playwright() as p:
     # 直接连接本地自愈网关
     browser = p.chromium.launch(
         headless=True,
-        proxy={"server": "http://127.0.0.1:10801"}
+        proxy={"server": "http://127.0.0.1:31000"}
     )
     page = browser.new_page()
     page.goto("https://ipinfo.io/json")
@@ -536,7 +537,7 @@ with sync_playwright() as p:
 from DrissionPage import ChromiumPage, ChromiumOptions
 
 co = ChromiumOptions()
-co.set_proxy("http://127.0.0.1:10801")
+co.set_proxy("http://127.0.0.1:31000")
 page = ChromiumPage(addr_or_opts=co)
 page.get("https://api.ipify.org")
 print("DrissionPage IP:", page.html)
@@ -555,7 +556,7 @@ proxies:
   - name: "URnetwork-Local-Gateway"
     type: socks5
     server: 127.0.0.1
-    port: 10801
+    port: 31000
     udp: false
 
   # 或直连云端独立节点
@@ -576,7 +577,7 @@ proxies:
       "type": "socks",
       "tag": "urnetwork-local",
       "server": "127.0.0.1",
-      "server_port": 10801,
+      "server_port": 31000,
       "version": "5"
     }
   ]
@@ -672,7 +673,7 @@ URnetwork-Proxy/
 > **答：** 底层 `MixedProxyServer` 采用了首字节协议嗅探（First-Byte Sniffing）机制。当客户端发起 TCP 连接时，网关只读预读首个字节：
 > - 若首字节为 `0x05`，立即转入 RFC 1928 标准 SOCKS5 协商流程；
 > - 若首字节为大写 ASCII 字符（如 `G`ET、`P`OST、`C`ONNECT），立即进入标准 HTTP / HTTPS 隧道处理流程。
-> 因此客户端向同一个端口（如 `127.0.0.1:10801`）配置 HTTP 或 SOCKS5 代理均可直接通畅工作。
+> 因此客户端向同一个端口（如 `127.0.0.1:31000`）配置 HTTP 或 SOCKS5 代理均可直接通畅工作。
 
 ### Q2: 为什么直连模式下密码固定填入 `none`？
 > **答：** URnetwork 官方节点由 `auth_token` 唯一定位身份。根据 RFC 1929 规范，很多客户端（Python `PySocks`、Clash、Chrome 插件）若遇到密码为空字符串时，会**自动将鉴权子协商降级为 0x00 (无鉴权)**，导致远端网关直接拒绝连接。统一规范填充 `none` 可确保客户端强制发送鉴权子协议，最大化保障第三方兼容性。

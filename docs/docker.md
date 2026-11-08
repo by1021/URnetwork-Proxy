@@ -23,9 +23,9 @@ docker compose logs --tail=50 urnetwork-proxy
 | 项目 | 默认值 | 说明 |
 | --- | --- | --- |
 | 管理入口 | `0.0.0.0:8777` / `[::]:8777` | 默认发布至全接口，支持外网与局域网直连 |
-| 代理端口 | `0.0.0.0:10801–10810` / `[::]:10801–10810` | 默认发布至全接口，HTTP、HTTPS、SOCKS5 共用每个网关 TCP 端口 |
+| 代理端口 | `0.0.0.0:31000–31010` / `[::]:31000–31010` | 默认发布至全接口，HTTP、HTTPS、SOCKS5 共用每个网关 TCP 端口 |
 | 网关监听地址 | 在控制台选择 `0.0.0.0` / `::` | 容器内回环监听不接受 Docker 转发的连接 |
-| 网关端口选择 | `10801–10810` | 端口映射不会自动创建网关，仍需在控制台新建并启动 |
+| 网关端口选择 | `31000–31010` | 端口映射不会自动创建网关，仍需在控制台新建并启动 |
 
 管理页面中的 `web_host` / `web_port` 被镜像启动参数覆盖。要更换宿主机端口，请在根目录创建 `.env`，而不是修改配置面板：
 
@@ -34,7 +34,7 @@ docker compose logs --tail=50 urnetwork-proxy
 # URNETWORK_WEB_BIND=127.0.0.1
 # URNETWORK_GATEWAY_BIND=127.0.0.1
 URNETWORK_WEB_PORT=8999
-URNETWORK_GATEWAY_PORTS=10801-10820
+URNETWORK_GATEWAY_PORTS=31000-31020
 ```
 
 ```bash
@@ -124,7 +124,7 @@ docker compose ps
 ```bash
 docker build -t urnetwork-proxy:local .
 docker run -d --name urnetwork-proxy --init --restart unless-stopped --stop-timeout 150 \
-  -p 8777:8777 -p 10801-10810:10801-10810 \
+  -p 8777:8777 -p 31000-31010:31000-31010 \
   -v urnetwork-data:/data urnetwork-proxy:local
 ```
 

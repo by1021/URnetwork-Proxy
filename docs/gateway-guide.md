@@ -44,24 +44,24 @@ Windows 双击 `start_web.bat`。原 `start.bat` / `python main.py` 仍进入终
 ## 创建与绑定
 
 1. 国家目录可搜索中文名、英文名、代码，查看数量、来源、更新时间和过期状态。
-2. 新建网关，填写名称、未占用的本地端口、国家或全球最佳策略。
-3. 等待“运行中”，复制 HTTP、HTTPS 或 SOCKS5 地址到客户端。
+2. 新建网关，填写名称、未占用的本地端口、国家或全球最佳策略。默认从 31000 起，自动跳过已保存网关的端口；编辑旧网关保留原端口。
+3. 等待“运行中”，确认卡片的“实测国家”与所选国家一致，再复制 HTTP、HTTPS 或 SOCKS5 地址到客户端。
 
-多个网关可分别使用 10801、10802、10803，绑定不同国家。每个网关 HTTP、HTTPS 和 SOCKS5 共用一个端口：
+多个网关可分别使用 31000、31001、31002，绑定不同国家。每个网关 HTTP、HTTPS 和 SOCKS5 共用一个端口：
 
 ```text
-HTTP:   http://127.0.0.1:10801
-HTTPS:  https://127.0.0.1:10801
-SOCKS5: socks5://127.0.0.1:10801
+HTTP:   http://127.0.0.1:31000
+HTTPS:  https://127.0.0.1:31000
+SOCKS5: socks5://127.0.0.1:31000
 ```
 
 访问 HTTPS 网站时，HTTP 代理使用 CONNECT，代理地址仍以 `http://` 开头。`https://` 代理额外加密客户端到网关的链路，两者不是同一种协议。
 curl 用 `--socks5-hostname` 或 `socks5h://` 将目标域名交给远端解析。
 
 ```powershell
-curl.exe --noproxy "" -x http://127.0.0.1:10801 https://api.ipify.org
-curl.exe --noproxy "" --proxy-cacert .local/gateway_tls.crt -x https://127.0.0.1:10801 https://api.ipify.org
-curl.exe --noproxy "" --socks5-hostname 127.0.0.1:10801 https://api.ipify.org
+curl.exe --noproxy "" -x http://127.0.0.1:31000 https://api.ipify.org
+curl.exe --noproxy "" --proxy-cacert .local/gateway_tls.crt -x https://127.0.0.1:31000 https://api.ipify.org
+curl.exe --noproxy "" --socks5-hostname 127.0.0.1:31000 https://api.ipify.org
 ```
 
 卡片显示和复制的 HTTP / HTTPS / SOCKS5 地址跟随浏览器当前访问主机，端口使用对应网关端口（不是管理端口）；IPv6 自动保留方括号。剪贴板不可用时，手动复制弹框提供相同地址。
@@ -78,6 +78,9 @@ curl.exe --noproxy "" --socks5-hostname 127.0.0.1:10801 https://api.ipify.org
 - 两个 IP 探针，验证代理鉴权、CONNECT、TLS 证书与 IP 响应。
 - 本机外网/探针异常时离线退避，避免持续创建。
 - 按原国家申请候选并完整验证后切换；失败保留旧绑定。
+- 指定国家是硬约束：通过证书校验的 HTTPS 地理接口分别核对 HTTP、SOCKS5 与可用 HTTPS 上游的出口国家；明文 ISP 信息不参与国家判定，跨国候选不会成为住宅优选的回退节点。国家数据查询失败时暂停发布未验证候选并退避。
+- 卡片顶部是请求国家，“实测国家”及数据来源来自出口 IP 查询，二者独立。地理数据有误差及最多 5 分钟缓存，不把上游代理服务器所在地或请求标签当作实际出口国家。
+- 已运行上游的可用出口检测到国家漂移或国家未验证时，立即暂停该上游、断开旧隧道；其他协议断线不掩盖国家检查，完全断线保留原失败阈值。启用自动恢复时只尝试原国家候选，不继续使用已知跨国出口。
 - 旧上游有 30 秒排空期；旧长连接失效后需客户端重试。
 - 每网关每小时最多创建 12 次；退避约 5–300 秒，回收积压会限制新建。
 - “更换/重连”重新申请上游，不保证获得不同 IP。
